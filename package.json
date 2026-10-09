@@ -1,0 +1,33 @@
+{
+  "name": "contract-analysis-pipeline",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/shared",
+    "services/api",
+    "services/worker",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "tsc -b && npm run build -w @nexus/web",
+    "typecheck": "tsc -b && npm run typecheck -w @nexus/web",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "predev": "tsc -b",
+    "dev": "concurrently -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch services/api/dist/index.js\" \"node --watch services/worker/dist/index.js\" \"npm run dev -w @nexus/web\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "concurrently": "^10.0.6",
+    "eslint": "^10.12.0",
+    "prettier": "~3.9.9",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.3"
+  }
+}

@@ -8,6 +8,7 @@ Take-home: upload vendor contracts (pdf/docx), process them async, extract struc
 - Don't redesign stuff I already decided. If you think something's wrong, say it first.
 - Packages + versions I name in a step are approved. Anything I didn't mention, ask first and tell me why.
 - After changes run `npm run typecheck && npm run lint && npm test` and tell me what actually happened. Never skip or loosen a test to get green.
+- Don't touch git: no commits, branches, pushes or PRs. I review the diff and commit myself. git status / diff / log are fine.
 
 ## layout
 - packages/shared: types + zod schemas used across services. `@nexus/shared` is browser safe, node-only stuff goes in `@nexus/shared/node`

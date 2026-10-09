@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "services/api" },
+    { "path": "services/worker" }
+  ]
+}
