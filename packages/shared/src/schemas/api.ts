@@ -65,7 +65,7 @@ export const DocumentDetailSchema = DocumentSummarySchema.extend({
   mime: z.string(),
   size_bytes: NonNegInt,
   attempts: NonNegInt,
-  // Starts at 1 and each retry bumps it. Job ids are "<docId>:<run>", so the worker can drop stale jobs.
+  // Starts at 1 and each retry bumps it. Job ids are "<docId>_<run>", so the worker can drop stale jobs.
   run: z.int().min(1),
   extraction: ExtractionRecordSchema.nullable(),
   events: z.array(DocumentEventSchema),
@@ -88,6 +88,8 @@ export const UploadResponseSchema = z.object({
       message: z.string(),
     }),
   ),
+  // Request level problem, e.g. too many files or no files at all. Files handled before it stay in accepted/rejected.
+  error: z.object({ code: z.string(), message: z.string() }).optional(),
 });
 export type UploadResponse = z.infer<typeof UploadResponseSchema>;
 

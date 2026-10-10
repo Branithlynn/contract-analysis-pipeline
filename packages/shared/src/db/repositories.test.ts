@@ -10,6 +10,7 @@ import {
   getExtraction,
   insertEvent,
   insertExtraction,
+  listCompletedForExport,
   listDocuments,
   listEvents,
   setStage,
@@ -29,7 +30,7 @@ function doc(id: string, overrides: Partial<CreateDocumentInput> = {}): CreateDo
     mime: "application/pdf",
     size_bytes: 100,
     sha256: `sha-${id}`,
-    storage_path: `/data/uploads/${id}.pdf`,
+    storage_path: `${id}.pdf`,
     status: "queued",
     ...overrides,
   };
@@ -121,6 +122,32 @@ describe("listDocuments", () => {
     expect(rows[0]?.latest_extraction_id).toBe(latest);
     expect(JSON.parse(rows[0]?.result_json ?? "null")).toEqual({ summary: "second" });
     expect(rows[1]?.result_json).toBeNull();
+  });
+});
+
+describe("listCompletedForExport", () => {
+  it("returns completed documents newest first with the extraction's json, model and prompt version", () => {
+    createDocument(db, doc("queued"));
+    at("2026-10-10T11:00:00.000Z");
+    createDocument(db, doc("older"));
+    transitionStatus(db, "older", "processing", { from: "queued" });
+    insertExtraction(db, extraction("older"));
+    transitionStatus(db, "older", "completed", { from: "processing" });
+    at("2026-10-10T12:00:00.000Z");
+    const original = getDocument(db, "older");
+    createDocument(db, {
+      ...doc("dup"),
+      status: "completed",
+      duplicate_of: "older",
+      latest_extraction_id: original?.latest_extraction_id ?? null,
+    });
+
+    const rows = listCompletedForExport(db);
+    expect(rows.map((r) => r.id)).toEqual(["dup", "older"]);
+    for (const row of rows) {
+      expect(row).toMatchObject({ model: "mock-1", prompt_version: "v1" });
+      expect(JSON.parse(row.result_json ?? "null")).toEqual({ summary: "test" });
+    }
   });
 });
 

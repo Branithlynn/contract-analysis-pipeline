@@ -22,7 +22,6 @@ export const ErrorCode = {
   EXTRACTION_INVALID: "EXTRACTION_INVALID",
   LLM_UNAVAILABLE: "LLM_UNAVAILABLE",
   LLM_AUTH: "LLM_AUTH",
-  QUEUE_UNAVAILABLE: "QUEUE_UNAVAILABLE",
   INTERNAL: "INTERNAL",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

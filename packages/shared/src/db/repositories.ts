@@ -30,6 +30,12 @@ export interface DocumentListRow extends DocumentRow {
   result_json: string | null;
 }
 
+export interface ExportRow extends DocumentRow {
+  result_json: string | null;
+  model: string | null;
+  prompt_version: string | null;
+}
+
 export interface ExtractionRow {
   id: string;
   document_id: string;
@@ -69,6 +75,7 @@ export interface CreateDocumentInput {
   mime: string;
   size_bytes: number;
   sha256: string;
+  // Relative to UPLOAD_DIR, e.g. "<id>.pdf". Readers resolve it against their own UPLOAD_DIR.
   storage_path: string;
   // completed is for duplicates, which reuse the original's extraction instead of being processed.
   status: "queued" | "completed";
@@ -106,6 +113,19 @@ export function listDocuments(db: Db, { limit }: { limit: number }): DocumentLis
        LIMIT ?`,
     )
     .all(limit);
+}
+
+// No limit: the export is the whole register, which is what replaces the spreadsheet.
+export function listCompletedForExport(db: Db): ExportRow[] {
+  return db
+    .prepare<[], ExportRow>(
+      `SELECT d.*, e.result_json, e.model, e.prompt_version
+       FROM documents d
+       LEFT JOIN extractions e ON e.id = d.latest_extraction_id
+       WHERE d.status = 'completed'
+       ORDER BY d.created_at DESC`,
+    )
+    .all();
 }
 
 export function findCompletedBySha256(db: Db, sha256: string): DocumentRow | undefined {

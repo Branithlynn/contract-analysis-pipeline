@@ -15,7 +15,7 @@ function insertDocument(db: Db, id: string, overrides: Record<string, unknown> =
     mime: "application/pdf",
     size_bytes: 1024,
     sha256: "abc",
-    storage_path: `/data/uploads/${id}.pdf`,
+    storage_path: `${id}.pdf`,
     status: "queued",
     created_at: NOW,
     updated_at: NOW,

@@ -71,7 +71,7 @@ export const MIGRATIONS: readonly Migration[] = [
   },
 ];
 
-const LATEST_VERSION = Math.max(0, ...MIGRATIONS.map((m) => m.version));
+export const LATEST_VERSION = Math.max(0, ...MIGRATIONS.map((m) => m.version));
 
 function ensureMigrationsTable(db: Db): void {
   db.exec(`
