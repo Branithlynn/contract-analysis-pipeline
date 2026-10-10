@@ -121,6 +121,8 @@ function fakeQueue(fail = false) {
       return fail ? Promise.reject(new Error("redis is not ready")) : Promise.resolve();
     },
     ping: () => Promise.resolve(),
+    isReady: () => true,
+    onReady: () => () => undefined,
     close: () => Promise.resolve(),
   };
   return { queue, calls };

@@ -46,19 +46,31 @@ function addDoc(n: number, updatedAt: Date) {
 
 const ago = (ms: number) => new Date(NOW.getTime() - ms);
 
-function fakeQueue(failFor: string[] = []) {
+function fakeQueue(failFor: string[] = [], { ready = true } = {}) {
   const calls: [string, number][] = [];
+  const state = { ready };
+  const listeners = new Set<() => void>();
   const queue: JobQueue = {
     enqueue: (documentId, run) => {
       calls.push([documentId, run]);
       return failFor.includes(documentId)
-        ? Promise.reject(new Error("redis is not ready"))
+        ? Promise.reject(new Error("enqueue failed"))
         : Promise.resolve();
     },
     ping: () => Promise.resolve(),
+    isReady: () => state.ready,
+    onReady: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     close: () => Promise.resolve(),
   };
-  return { queue, calls };
+  // Mirrors ioredis: status flips to ready, then the ready event fires.
+  const becomeReady = () => {
+    state.ready = true;
+    for (const listener of listeners) listener();
+  };
+  return { queue, calls, state, becomeReady, listeners };
 }
 
 function capture() {
@@ -137,5 +149,76 @@ describe("startReconciler", () => {
     reconciler.stop();
     await vi.advanceTimersByTimeAsync(5000);
     expect(passes()).toBe(2);
+  });
+
+  describe("when redis is not ready yet", () => {
+    it("skips the pass with one debug line and no per-row warnings", async () => {
+      addDoc(1, ago(5 * 60_000));
+      addDoc(2, ago(4 * 60_000));
+      const { queue, calls } = fakeQueue([], { ready: false });
+      const { logger, lines } = capture();
+      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      reconciler.stop();
+
+      await expect(reconciler.runOnce()).resolves.toBe("skipped");
+      expect(calls).toEqual([]);
+      expect(lines.filter((l) => (l.level as number) >= 40)).toEqual([]);
+      // runOnce joins the boot pass that is still in flight, so it is one pass and one line.
+      expect(lines.filter((l) => l.msg === "reconciler pass skipped, queue not ready")).toEqual([
+        expect.objectContaining({ level: 20 }),
+      ]);
+    });
+
+    it("runs a pass as soon as the queue becomes ready instead of waiting for the interval", async () => {
+      addDoc(1, ago(5 * 60_000));
+      const { queue, calls, becomeReady } = fakeQueue([], { ready: false });
+      const { logger, lines } = capture();
+      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      await vi.waitFor(() =>
+        expect(lines.some((l) => l.msg === "reconciler pass skipped, queue not ready")).toBe(true),
+      );
+
+      becomeReady();
+      await vi.waitFor(() => expect(calls).toEqual([[id(1), 1]]));
+      reconciler.stop();
+    });
+
+    it("stops listening for ready on stop", () => {
+      const { queue, listeners } = fakeQueue([], { ready: false });
+      const { logger } = capture();
+      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      expect(listeners.size).toBe(1);
+
+      reconciler.stop();
+      expect(listeners.size).toBe(0);
+    });
+
+    it("stops the pass without per-row warnings when redis drops in the middle", async () => {
+      addDoc(1, ago(5 * 60_000));
+      addDoc(2, ago(4 * 60_000));
+      addDoc(3, ago(3 * 60_000));
+      const { queue, calls, state } = fakeQueue();
+      const enqueue = queue.enqueue.bind(queue);
+      queue.enqueue = async (documentId, run) => {
+        await enqueue(documentId, run);
+        state.ready = false;
+      };
+      const { logger, lines } = capture();
+      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      reconciler.stop();
+      await vi.waitFor(() =>
+        expect(lines.some((l) => l.msg?.toString().startsWith("reconciler"))).toBe(true),
+      );
+
+      expect(calls).toEqual([[id(1), 1]]);
+      expect(lines.filter((l) => (l.level as number) >= 40)).toEqual([]);
+      expect(lines.find((l) => l.msg === "reconciler pass stopped, queue not ready")).toMatchObject(
+        {
+          level: 20,
+          stale: 3,
+          enqueued: 1,
+        },
+      );
+    });
   });
 });

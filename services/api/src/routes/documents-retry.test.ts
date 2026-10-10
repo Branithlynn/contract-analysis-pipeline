@@ -59,6 +59,8 @@ async function setup({ failEnqueue = false } = {}) {
       return failEnqueue ? Promise.reject(new Error("redis is not ready")) : Promise.resolve();
     },
     ping: () => Promise.resolve(),
+    isReady: () => true,
+    onReady: () => () => undefined,
     close: () => Promise.resolve(),
   };
   const app = await buildServer({

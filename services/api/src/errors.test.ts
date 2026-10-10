@@ -10,6 +10,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const okQueue: JobQueue = {
   enqueue: () => Promise.resolve(),
   ping: () => Promise.resolve(),
+  isReady: () => true,
+  onReady: () => () => undefined,
   close: () => Promise.resolve(),
 };
 

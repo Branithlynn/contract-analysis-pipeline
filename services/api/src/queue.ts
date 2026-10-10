@@ -10,6 +10,10 @@ export interface JobQueue {
   enqueue(documentId: string, run: number): Promise<void>;
   // Rejects when redis does not answer within the timeout, so the caller can log why.
   ping(): Promise<void>;
+  // Synchronous connection check, so a caller can skip work instead of failing every enqueue.
+  isReady(): boolean;
+  // Fires each time the connection becomes ready, reconnects included. Returns an unsubscribe.
+  onReady(listener: () => void): () => void;
   close(): Promise<void>;
 }
 
@@ -41,7 +45,7 @@ export class BullMqJobQueue implements JobQueue {
     const payload = ExtractJobPayload.parse({ documentId, run });
     // add() waits for the connection to be ready, which with redis down is forever, so offline queue and
     // commandTimeout never get a say. Checking first also covers redis dropping after it was up.
-    if (this.redis.status !== "ready") {
+    if (!this.isReady()) {
       throw new Error(`redis is not ready (status ${this.redis.status})`);
     }
     await this.queue.add("extract", payload, {
@@ -51,6 +55,17 @@ export class BullMqJobQueue implements JobQueue {
       removeOnComplete: { age: SEVEN_DAYS_S },
       removeOnFail: { age: SEVEN_DAYS_S },
     });
+  }
+
+  isReady(): boolean {
+    return this.redis.status === "ready";
+  }
+
+  onReady(listener: () => void): () => void {
+    this.redis.on("ready", listener);
+    return () => {
+      this.redis.off("ready", listener);
+    };
   }
 
   async ping(): Promise<void> {
