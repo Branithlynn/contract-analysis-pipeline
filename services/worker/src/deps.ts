@@ -5,8 +5,7 @@ export interface WorkerDeps {
   db: Db;
   config: Config;
   logger: Logger;
-  // null until the llm layer exists.
-  provider: LlmProvider | null;
+  provider: LlmProvider;
   // Injected so date math and timestamps are testable.
   clock: () => Date;
 }

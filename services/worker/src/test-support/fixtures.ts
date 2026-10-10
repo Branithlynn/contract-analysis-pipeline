@@ -7,6 +7,7 @@ import {
   type CreateDocumentInput,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "../deps.js";
+import { MockProvider } from "../llm/mock.js";
 
 // Shared by the worker tests. Excluded from the build in tsconfig.json, typechecked via tsconfig.test.json.
 
@@ -27,7 +28,7 @@ export function makeDeps(env: Record<string, string> = {}) {
     db,
     config: loadConfig(env),
     logger: createLogger("worker", "debug", stream),
-    provider: null,
+    provider: new MockProvider(),
     clock: () => NOW,
   };
   return { deps, lines };

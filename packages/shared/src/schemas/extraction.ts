@@ -41,16 +41,20 @@ const Money = z.object({
   currency: z.string().describe("ISO 4217 currency code, e.g. USD, EUR"),
 });
 
-// The quote is what lets us check each value against the document text later.
+// The quote is what lets us check each value against the document text later. It is "" rather than
+// null when nothing was found: a nullable quote on every field doubles the union types (anyOf /
+// [x, "null"]), and a small schema keeps constrained decoding fast and inside the limits of openai
+// strict mode and ollama's grammar. It also gives every provider the same quote shape. Normalize turns
+// "" back into null. History: anthropic structured outputs rejected this schema with "compiled grammar
+// is too large", so anthropic now gets the schema as a hint in the system prompt instead.
 function field<T extends z.ZodType>(value: T, description: string) {
   return z
     .object({
       value: value.nullable(),
       quote: z
         .string()
-        .nullable()
         .describe(
-          "Exact text copied from the document that supports the value, or null if not found",
+          "Exact text copied from the document that supports the value, or an empty string if not found",
         ),
       confidence: Confidence,
     })
@@ -61,7 +65,11 @@ const RiskClause = z.object({
   category: RiskCategory,
   severity: Severity,
   title: z.string(),
-  explanation: z.string(),
+  explanation: z
+    .string()
+    .describe(
+      "One sentence in your own words on why this clause matters to Nexus Corp. Do not repeat the quote.",
+    ),
   quote: z.string().describe("Exact text copied from the document"),
 });
 
@@ -72,14 +80,21 @@ export const LlmExtractionSchema = z.object({
   customer_name: field(z.string(), "Party buying the goods or services"),
   payment_terms: field(z.string(), "Payment terms, e.g. net 30"),
   governing_law: field(z.string(), "Jurisdiction whose law governs the agreement"),
-  liability_cap: field(z.string(), "Limit on liability as written in the document"),
-  effective_date: field(z.string(), "Date the agreement takes effect, formatted YYYY-MM-DD"),
+  liability_cap: field(
+    z.string(),
+    "Limit on liability in the document's own words, for example 'fees paid in the 12 months before the claim' or 'USD 50,000'. Do not calculate it.",
+  ),
+  effective_date: field(
+    z.string(),
+    "Date the agreement starts or takes effect, formatted YYYY-MM-DD. A separate signing date is not the effective date",
+  ),
   expiration_date: field(z.string(), "Date the initial term ends, formatted YYYY-MM-DD"),
   initial_term_months: field(z.number(), "Length of the initial term in months"),
   renewal_term_months: field(z.number(), "Length of each renewal term in months"),
+  // The renewal deadline is computed from this, so a cure period here moves the deadline.
   termination_notice_days: field(
     z.number(),
-    "Days of notice required to terminate or prevent renewal",
+    "Days of notice required to terminate the agreement or stop it from renewing. Never a cure or remedy period",
   ),
   auto_renewal: field(z.boolean(), "Whether the agreement renews automatically"),
   total_contract_value: field(Money, "Total value of the agreement"),

@@ -27,7 +27,7 @@ const fullLlm: LlmExtraction = {
     quote: "effective as of 1 March 2026",
     confidence: "high",
   },
-  expiration_date: { value: null, quote: null, confidence: "low" },
+  expiration_date: { value: null, quote: "", confidence: "low" },
   initial_term_months: {
     value: 24,
     quote: "initial term of twenty-four (24) months",
@@ -57,7 +57,7 @@ const fullLlm: LlmExtraction = {
   summary: "Two year cloud services agreement with automatic annual renewal.",
 };
 
-const nullField = { value: null, quote: null, confidence: "low" } as const;
+const nullField = { value: null, quote: "", confidence: "low" } as const;
 
 const allNullLlm: LlmExtraction = {
   document_type: nullField,
@@ -77,8 +77,15 @@ const allNullLlm: LlmExtraction = {
   summary: "",
 };
 
-function verified<T extends { quote: string | null }>(f: T) {
-  return { ...f, quote_verified: f.quote !== null, quote_page: f.quote === null ? null : 1 };
+// Mirrors normalize: the llm's "" (not found) is stored as null.
+function verified<T extends { quote: string }>(f: T) {
+  const found = f.quote !== "";
+  return {
+    ...f,
+    quote: found ? f.quote : null,
+    quote_verified: found,
+    quote_page: found ? 1 : null,
+  };
 }
 
 const validResult: ExtractionResult = {
@@ -133,6 +140,11 @@ describe("LlmExtractionSchema", () => {
     expect(LlmExtractionSchema.safeParse(bad).success).toBe(false);
   });
 
+  it("rejects a null quote, not found is an empty string", () => {
+    const bad = { ...fullLlm, vendor_name: { ...fullLlm.vendor_name, quote: null } };
+    expect(LlmExtractionSchema.safeParse(bad).success).toBe(false);
+  });
+
   it("rejects a missing key", () => {
     const withoutSummary: Partial<LlmExtraction> = { ...fullLlm };
     delete withoutSummary.summary;
@@ -164,6 +176,44 @@ describe("llmExtractionJsonSchema", () => {
     });
     expect(objects.length).toBeGreaterThan(0);
     for (const obj of objects) expect(obj.additionalProperties).toBe(false);
+  });
+
+  // Every union type grows the grammar openai strict mode and ollama compile for constrained decoding.
+  // 16 is the bar we first met (anthropic's documented limit); it fails loudly if the schema grows.
+  it("keeps union-typed parameters at 16 or fewer so constrained decoding stays small", () => {
+    let unions = 0;
+    walk(schema, (obj) => {
+      if (Array.isArray(obj.anyOf) || Array.isArray(obj.type)) unions += 1;
+    });
+    expect(unions).toBeLessThanOrEqual(16);
+  });
+
+  it("describes field quotes as a plain string", () => {
+    const properties = schema.properties as Record<
+      string,
+      { properties?: Record<string, unknown> }
+    >;
+    expect(properties.vendor_name?.properties?.quote).toEqual({
+      type: "string",
+      description: expect.stringContaining("empty string") as unknown,
+    });
+  });
+
+  // These definitions fixed real mix-ups (signing date, cure period, copied quote), keep them.
+  it("defines the fields small models confused", () => {
+    const props = schema.properties as Record<string, { description?: string }>;
+    const risk = (
+      schema.properties as Record<
+        string,
+        { items: { properties: Record<string, { description?: string }> } }
+      >
+    ).risk_clauses?.items.properties;
+
+    expect(props.effective_date?.description).toContain("signing date is not the effective date");
+    expect(props.termination_notice_days?.description).toContain("Never a cure or remedy period");
+    expect(risk?.explanation?.description).toContain("Do not repeat the quote");
+    expect(props.liability_cap?.description).toContain("in the document's own words");
+    expect(props.liability_cap?.description).toContain("Do not calculate it.");
   });
 
   it("contains no pattern anywhere in the tree", () => {

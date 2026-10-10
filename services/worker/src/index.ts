@@ -9,6 +9,7 @@ import {
   QUEUE_NAME,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "./deps.js";
+import { createProvider } from "./llm/factory.js";
 import { processJob } from "./pipeline/run.js";
 
 const config = loadConfig();
@@ -23,7 +24,8 @@ try {
   // Only the api migrates. Starting on an old schema would fail later on some query, so fail here.
   assertMigrated(db);
 
-  const deps: WorkerDeps = { db, config, logger, provider: null, clock: () => new Date() };
+  const provider = createProvider(config);
+  const deps: WorkerDeps = { db, config, logger, provider, clock: () => new Date() };
 
   const worker = new Worker(QUEUE_NAME, (job) => processJob(job, deps), {
     connection: { url: config.REDIS_URL, maxRetriesPerRequest: null },
@@ -44,13 +46,21 @@ try {
   worker.on("error", (err) => {
     logger.error({ err }, "worker error");
   });
-  logger.info({ queue: QUEUE_NAME, concurrency: config.WORKER_CONCURRENCY }, "worker started");
+  logger.info(
+    {
+      queue: QUEUE_NAME,
+      concurrency: config.WORKER_CONCURRENCY,
+      provider: provider.name,
+      model: provider.model,
+    },
+    "worker started",
+  );
 
   const shutdown = createShutdown({
     logger,
     exit: (code) => process.exit(code),
     // close() lets active jobs finish, which can take as long as one llm call.
-    // docker compose stop_grace_period has to be longer than this (4m with the defaults), or SIGKILL
+    // docker compose stop_grace_period has to be longer than this (6m with the defaults), or SIGKILL
     // arrives before active jobs finish.
     forceAfterMs: config.LLM_TIMEOUT_MS + 30_000,
     steps: [

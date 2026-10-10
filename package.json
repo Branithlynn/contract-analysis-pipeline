@@ -20,7 +20,9 @@
     "test": "vitest run",
     "predev": "tsc -b",
     "dev": "concurrently -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch services/api/dist/index.js\" \"node --watch services/worker/dist/index.js\" \"npm run dev -w @nexus/web\"",
-    "test-files": "tsx scripts/make-test-files.ts"
+    "test-files": "tsx scripts/make-test-files.ts",
+    "prellm-smoke": "tsc -b",
+    "llm-smoke": "tsx scripts/llm-smoke.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",

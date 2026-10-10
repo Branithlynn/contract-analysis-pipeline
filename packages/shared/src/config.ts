@@ -22,8 +22,10 @@ const ConfigSchema = z
     OLLAMA_URL: z.url().default("http://localhost:11434"),
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
-    LLM_TIMEOUT_MS: PositiveInt.default(180000),
-    LLM_MAX_INPUT_CHARS: PositiveInt.default(24000),
+    // Per llm call. Hosted providers answer in seconds; this is for a full chunk on a local gpu.
+    LLM_TIMEOUT_MS: PositiveInt.default(300000),
+    // Sized so qwen2.5:7b mostly fits a 6 GB GPU (num_ctx 10240). Longer documents are chunked.
+    LLM_MAX_INPUT_CHARS: PositiveInt.default(12000),
     LLM_CHUNK_CONCURRENCY: PositiveInt.default(1),
     WORKER_CONCURRENCY: PositiveInt.default(2),
     JOB_ATTEMPTS: PositiveInt.default(3),

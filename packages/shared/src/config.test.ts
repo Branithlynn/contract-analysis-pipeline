@@ -6,7 +6,8 @@ describe("loadConfig", () => {
     const config = loadConfig({});
     expect(config.API_PORT).toBe(3000);
     expect(config.LLM_PROVIDER).toBe("ollama");
-    expect(config.LLM_TIMEOUT_MS).toBe(180000);
+    expect(config.LLM_TIMEOUT_MS).toBe(300000);
+    expect(config.LLM_MAX_INPUT_CHARS).toBe(12000);
     expect(config.GROUNDING_REVIEW_THRESHOLD).toBe(0.8);
   });
 

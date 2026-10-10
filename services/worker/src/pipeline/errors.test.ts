@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ErrorCode } from "@nexus/shared";
+import { LlmError, type LlmErrorKind } from "../llm/errors.js";
 import { PermanentError, TransientError, classifyError } from "./errors.js";
 
 function withCode(code: string): Error {
@@ -77,6 +78,37 @@ describe("classifyError", () => {
   it("handles non-Error throws", () => {
     expect(classifyError("boom")).toMatchObject({ code: ErrorCode.INTERNAL, message: "boom" });
     expect(classifyError(undefined).code).toBe(ErrorCode.INTERNAL);
+  });
+
+  it.each<[LlmErrorKind, typeof TransientError | typeof PermanentError, ErrorCode]>([
+    ["timeout", TransientError, ErrorCode.LLM_UNAVAILABLE],
+    ["rate_limited", TransientError, ErrorCode.LLM_UNAVAILABLE],
+    ["unavailable", TransientError, ErrorCode.LLM_UNAVAILABLE],
+    ["auth", PermanentError, ErrorCode.LLM_AUTH],
+    ["invalid_request", PermanentError, ErrorCode.INTERNAL],
+    ["bad_output", PermanentError, ErrorCode.EXTRACTION_INVALID],
+  ])("maps LlmError %s to %o %s", (kind, cls, code) => {
+    const err = new LlmError(kind, `llm said ${kind}`);
+    const result = classifyError(err);
+
+    expect(result).toBeInstanceOf(cls);
+    expect(result).toMatchObject({ code, message: `llm said ${kind}` });
+    expect(result.cause).toBe(err);
+  });
+
+  it("finds an LlmError on the cause chain", () => {
+    const err = new Error("stage failed", { cause: new LlmError("auth", "401 from provider") });
+    const result = classifyError(err);
+
+    expect(result).toBeInstanceOf(PermanentError);
+    expect(result.code).toBe(ErrorCode.LLM_AUTH);
+    expect(result.cause).toBe(err);
+  });
+
+  it("lets an LlmError win over a network code further down the chain", () => {
+    const err = new LlmError("auth", "401", undefined, { cause: withCode("ECONNRESET") });
+
+    expect(classifyError(err).code).toBe(ErrorCode.LLM_AUTH);
   });
 
   it("survives a cause cycle", () => {
