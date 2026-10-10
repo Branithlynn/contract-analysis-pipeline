@@ -13,9 +13,10 @@
   ],
   "scripts": {
     "build": "tsc -b && npm run build -w @nexus/web",
-    "typecheck": "tsc -b && npm run typecheck -w @nexus/web",
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json && npm run typecheck -w @nexus/web",
     "lint": "eslint .",
     "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "vitest run",
     "predev": "tsc -b",
     "dev": "concurrently -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch services/api/dist/index.js\" \"node --watch services/worker/dist/index.js\" \"npm run dev -w @nexus/web\""
