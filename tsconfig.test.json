@@ -4,5 +4,5 @@
     "noEmit": true,
     "composite": false
   },
-  "include": ["packages/*/src", "services/*/src"]
+  "include": ["packages/*/src", "services/*/src", "scripts"]
 }

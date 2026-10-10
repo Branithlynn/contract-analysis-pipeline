@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-export const LlmProvider = z.enum(["ollama", "anthropic", "openai", "mock"]);
-export type LlmProvider = z.infer<typeof LlmProvider>;
+export const LlmProviderName = z.enum(["ollama", "anthropic", "openai", "mock"]);
+export type LlmProviderName = z.infer<typeof LlmProviderName>;
 
 const PositiveInt = z.coerce.number().int().positive();
 
@@ -17,7 +17,7 @@ const ConfigSchema = z
     REDIS_URL: z.url().default("redis://localhost:6379"),
     MAX_UPLOAD_MB: PositiveInt.default(20),
     MAX_FILES_PER_REQUEST: PositiveInt.default(10),
-    LLM_PROVIDER: LlmProvider.default("ollama"),
+    LLM_PROVIDER: LlmProviderName.default("ollama"),
     LLM_MODEL: z.string().default("qwen2.5:7b-instruct"),
     OLLAMA_URL: z.url().default("http://localhost:11434"),
     ANTHROPIC_API_KEY: z.string().optional(),

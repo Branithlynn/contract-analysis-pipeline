@@ -4,3 +4,4 @@ export * from "./db/migrations.js";
 export * from "./db/repositories.js";
 export * from "./logger.js";
 export * from "./queue.js";
+export * from "./shutdown.js";

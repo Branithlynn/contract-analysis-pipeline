@@ -19,13 +19,15 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "predev": "tsc -b",
-    "dev": "concurrently -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch services/api/dist/index.js\" \"node --watch services/worker/dist/index.js\" \"npm run dev -w @nexus/web\""
+    "dev": "concurrently -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch services/api/dist/index.js\" \"node --watch services/worker/dist/index.js\" \"npm run dev -w @nexus/web\"",
+    "test-files": "tsx scripts/make-test-files.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",
     "concurrently": "^10.0.6",
     "eslint": "^10.12.0",
     "prettier": "~3.9.9",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.1",
     "vite": "^8.3.4",

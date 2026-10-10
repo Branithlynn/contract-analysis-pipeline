@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createLogger } from "@nexus/shared/node";
+import { createLogger } from "./logger.js";
 import { createShutdown } from "./shutdown.js";
 
 function capture() {

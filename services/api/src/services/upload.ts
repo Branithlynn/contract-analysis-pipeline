@@ -7,16 +7,10 @@ import { pipeline } from "node:stream/promises";
 import type { MultipartFile } from "@fastify/multipart";
 import type { FastifyBaseLogger } from "fastify";
 import { fileTypeFromFile } from "file-type";
-import { ErrorCode, type UploadResponse } from "@nexus/shared";
+import { ErrorCode, MIME_FORMATS, type UploadResponse } from "@nexus/shared";
 import { createDocument, findCompletedBySha256, type Config, type Db } from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
 import { enqueueOrDefer } from "./enqueue.js";
-
-// Keyed by the mime file-type detects from the bytes. The client's extension and content-type are ignored.
-const ALLOWED_TYPES: ReadonlyMap<string, string> = new Map([
-  ["application/pdf", "pdf"],
-  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"],
-]);
 
 export interface UploadDeps {
   db: Db;
@@ -75,7 +69,8 @@ export async function storeUpload(
     }
 
     const detected = await fileTypeFromFile(tmpPath);
-    const ext = detected ? ALLOWED_TYPES.get(detected.mime) : undefined;
+    // Looked up by the mime file-type detects from the bytes. The client's extension and content-type are ignored.
+    const ext = detected ? MIME_FORMATS.get(detected.mime) : undefined;
     if (!detected || !ext) {
       const what = detected?.mime ?? "unknown";
       logLine("unsupported_type", detected?.mime ?? null);

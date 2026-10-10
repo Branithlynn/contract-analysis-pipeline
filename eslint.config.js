@@ -35,6 +35,7 @@ export default defineConfig([
     files: [
       "packages/shared/src/index.ts",
       "packages/shared/src/status.ts",
+      "packages/shared/src/formats.ts",
       "packages/shared/src/schemas/**",
     ],
     rules: {

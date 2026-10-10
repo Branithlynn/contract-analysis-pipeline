@@ -9,6 +9,8 @@ export const NOW = new Date("2026-06-01T12:00:00Z");
 export const okQueue: JobQueue = {
   enqueue: () => Promise.resolve(),
   ping: () => Promise.resolve(),
+  isReady: () => true,
+  onReady: () => () => undefined,
   close: () => Promise.resolve(),
 };
 

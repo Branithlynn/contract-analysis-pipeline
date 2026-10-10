@@ -1,10 +1,16 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createLogger, LATEST_VERSION, loadConfig, migrate, openDb } from "@nexus/shared/node";
+import {
+  createLogger,
+  createShutdown,
+  LATEST_VERSION,
+  loadConfig,
+  migrate,
+  openDb,
+} from "@nexus/shared/node";
 import { BullMqJobQueue } from "./queue.js";
 import { startReconciler } from "./reconciler.js";
 import { buildServer } from "./server.js";
-import { createShutdown } from "./shutdown.js";
 
 const config = loadConfig();
 const logger = createLogger("api", config.LOG_LEVEL);

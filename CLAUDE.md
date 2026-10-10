@@ -42,5 +42,6 @@ Take-home: upload vendor contracts (pdf/docx), process them async, extract struc
 ## commands
 - `npm run dev` (needs redis + ollama, or LLM_PROVIDER=mock)
 - `npm run typecheck` / `lint` / `test` / `test:e2e`
+- `npm run test-files` (regenerates samples/ for manual testing)
 - `npm run samples`, `npm run eval -- --provider <p> --model <m>`
 - `docker compose --profile ollama up --build`

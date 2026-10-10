@@ -1,4 +1,4 @@
-import type { Logger } from "@nexus/shared/node";
+import type { Logger } from "./logger.js";
 
 export type ShutdownStep = [name: string, close: () => void | Promise<void>];
 
