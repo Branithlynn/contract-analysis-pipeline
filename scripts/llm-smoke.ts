@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { parseArgs } from "node:util";
 import { LlmExtractionSchema, MIME_FORMATS, llmExtractionJsonSchema } from "@nexus/shared";
-import { LlmProviderName, createLogger, loadConfig } from "@nexus/shared/node";
+import { createLogger, loadConfig } from "@nexus/shared/node";
 import { z } from "zod";
 import { LlmError } from "../services/worker/src/llm/errors.js";
 import { createProvider, ollamaContextFloor } from "../services/worker/src/llm/factory.js";
@@ -18,6 +18,7 @@ import {
 } from "../services/worker/src/llm/prompts/extract.v1.js";
 import type { LlmRequest } from "../services/worker/src/llm/types.js";
 import { parseDocument } from "../services/worker/src/parse/index.js";
+import { llmEnvFromArgs } from "./lib/llm-env.js";
 // How much of the document to show in the printed ollama request body.
 const PREVIEW_CHARS = 300;
 
@@ -47,31 +48,13 @@ async function main(): Promise<void> {
   const file = positionals[0];
   if (file === undefined || positionals.length > 1) fail(USAGE);
   if (!existsSync(file)) fail(`file not found: ${file}`);
-  if (values.provider !== undefined && !LlmProviderName.safeParse(values.provider).success) {
-    fail(`unknown provider "${values.provider}"\n${USAGE}`);
-  }
 
-  if (existsSync(".env")) process.loadEnvFile(".env");
-  // LLM_MODEL in .env belongs to the provider in .env. Switching provider without a model would send
-  // e.g. a qwen model name to anthropic. Blank counts as unset, like in loadConfig. The mock ignores
-  // the model, so it doesn't need one.
-  const envProvider =
-    process.env.LLM_PROVIDER === undefined || process.env.LLM_PROVIDER === ""
-      ? "ollama"
-      : process.env.LLM_PROVIDER;
-  if (
-    values.provider !== undefined &&
-    values.provider !== "mock" &&
-    values.provider !== envProvider &&
-    values.model === undefined
-  ) {
-    fail(
-      `--model is required when --provider differs from LLM_PROVIDER (${envProvider})\n${USAGE}`,
-    );
+  let env: Record<string, string | undefined>;
+  try {
+    env = llmEnvFromArgs(values);
+  } catch (err) {
+    fail(`${err instanceof Error ? err.message : String(err)}\n${USAGE}`);
   }
-  const env: Record<string, string | undefined> = { ...process.env };
-  if (values.provider !== undefined) env.LLM_PROVIDER = values.provider;
-  if (values.model !== undefined) env.LLM_MODEL = values.model;
   // loadConfig's error lists field paths and problems, never the values, so keys can't leak here.
   const config = loadConfig(env);
   const logger = createLogger("llm-smoke", "warn");

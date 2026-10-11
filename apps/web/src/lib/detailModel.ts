@@ -44,6 +44,12 @@ export function groupRisks(
 }
 
 // Mirrors the rule in the api's retry route. The api still decides: a stale answer here gets a 409.
+// A contract that just ends has no notice deadline by design. That is different from one that
+// renews but where no notice period was found, and the panel should not make them look the same.
+export function noticeDeadlineEmptyText(autoRenewal: boolean | null): string {
+  return autoRenewal === false ? "Not applicable (no auto-renewal)" : "Not computed";
+}
+
 export function canRetry(doc: Pick<DocumentSummary, "status" | "needs_review">): boolean {
   return doc.status === "failed" || (doc.status === "completed" && doc.needs_review);
 }

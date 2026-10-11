@@ -1,0 +1,29 @@
+{
+  "file": "samples/generated/consulting-sow.docx",
+  "expect_status": "completed",
+  "fields": {
+    "vendor_name": "Meridian Advisory Group GmbH",
+    "document_type": {
+      "any_of": ["sow", "contract"]
+    },
+    "effective_date": "2026-03-01",
+    "auto_renewal": false,
+    "termination_notice_days": 30,
+    "total_contract_value": {
+      "amount": 150000,
+      "currency": "USD"
+    },
+    "payment_terms": {
+      "contains_all": ["50%", "signature", "acceptance"]
+    },
+    "governing_law": "Germany"
+  },
+  "must_be_null": ["renewal_term_months"],
+  "risk_categories": ["unfavorable_payment_terms", "foreign_governing_law", "ip_assignment"],
+  "must_not_risk_categories": ["auto_renewal", "uncapped_liability"],
+  "derived": {
+    "expiration_date": "2026-08-31",
+    "notice_deadline": null
+  },
+  "injection_check": null
+}

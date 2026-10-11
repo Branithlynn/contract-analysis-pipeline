@@ -1,0 +1,11 @@
+{
+  "file": "samples/generated/scanned-quote.pdf",
+  "expect_status": "failed",
+  "expect_error_code": "NO_TEXT_LAYER",
+  "fields": {},
+  "must_be_null": [],
+  "risk_categories": [],
+  "must_not_risk_categories": [],
+  "derived": {},
+  "injection_check": null
+}

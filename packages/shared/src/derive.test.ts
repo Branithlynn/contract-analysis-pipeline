@@ -134,6 +134,28 @@ describe("deriveDates", () => {
     ]);
   });
 
+  it("has no notice deadline or renewal date when the contract does not auto renew", () => {
+    // A notice period on a contract that just ends is for early termination. Showing it as a
+    // "notice by" date would send someone chasing a deadline that does nothing.
+    for (const autoRenewal of [false, null]) {
+      const d = derive(
+        facts({
+          effective_date: "2026-06-01",
+          initial_term_months: 36,
+          termination_notice_days: 30,
+          auto_renewal: autoRenewal,
+        }),
+      );
+
+      expect(d.expiration_date).toBe("2029-05-31");
+      expect(d.current_term_end).toBe("2029-05-31");
+      expect(d.next_renewal_date).toBeNull();
+      expect(d.notice_deadline).toBeNull();
+      expect(d.days_until_notice_deadline).toBeNull();
+      expect(d.alerts).toEqual([]);
+    }
+  });
+
   it("returns nulls and no alerts when the facts are missing", () => {
     expect(derive(facts({}))).toEqual({
       expiration_date: null,

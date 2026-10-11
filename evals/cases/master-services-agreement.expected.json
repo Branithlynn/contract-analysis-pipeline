@@ -1,0 +1,26 @@
+{
+  "file": "samples/generated/master-services-agreement.pdf",
+  "expect_status": "completed",
+  "fields": {
+    "vendor_name": "Atlas Ridge Technologies LLC",
+    "document_type": "contract",
+    "effective_date": "2026-02-01",
+    "initial_term_months": 24,
+    "auto_renewal": true,
+    "renewal_term_months": 12,
+    "termination_notice_days": 90,
+    "total_contract_value": { "amount": 2400000, "currency": "USD" },
+    "payment_terms": "Net 60",
+    "governing_law": "New York"
+  },
+  "must_be_null": [],
+  "risk_categories": [
+    "broad_indemnification",
+    "termination_for_convenience_vendor_only",
+    "ip_assignment",
+    "data_protection_gap"
+  ],
+  "must_not_risk_categories": ["uncapped_liability"],
+  "derived": { "expiration_date": "2028-01-31", "notice_deadline": "2027-11-02" },
+  "injection_check": null
+}

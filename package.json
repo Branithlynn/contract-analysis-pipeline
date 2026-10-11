@@ -25,6 +25,9 @@
     "docker:down": "docker compose --profile \"*\" down",
     "docker:reset": "docker compose --profile \"*\" down -v",
     "test-files": "tsx scripts/make-test-files.ts",
+    "samples": "tsx scripts/make-samples.ts",
+    "preeval": "tsc -b",
+    "eval": "tsx evals/run.ts",
     "prellm-smoke": "tsc -b",
     "llm-smoke": "tsx scripts/llm-smoke.ts"
   },

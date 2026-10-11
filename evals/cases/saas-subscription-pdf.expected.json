@@ -1,0 +1,21 @@
+{
+  "file": "samples/generated/saas-subscription.pdf",
+  "expect_status": "completed",
+  "fields": {
+    "vendor_name": "Cloudhaven Software Ltd.",
+    "document_type": "contract",
+    "effective_date": "2025-01-15",
+    "initial_term_months": 12,
+    "auto_renewal": true,
+    "renewal_term_months": 12,
+    "termination_notice_days": 60,
+    "total_contract_value": { "amount": 84000, "currency": "EUR" },
+    "payment_terms": "Net 30",
+    "governing_law": "England and Wales"
+  },
+  "must_be_null": [],
+  "risk_categories": ["auto_renewal", "unilateral_price_increase", "uncapped_liability"],
+  "must_not_risk_categories": ["data_protection_gap"],
+  "derived": { "expiration_date": "2026-01-14", "notice_deadline": "2026-11-15" },
+  "injection_check": null
+}

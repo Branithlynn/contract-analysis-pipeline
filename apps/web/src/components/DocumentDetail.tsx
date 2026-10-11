@@ -5,7 +5,13 @@ import type {
   ExtractionResult,
 } from "@nexus/shared";
 import { useDocument, useDocuments, useRetry } from "../api/hooks.js";
-import { canRetry, groupRisks, sortAlerts, splitWarnings } from "../lib/detailModel.js";
+import {
+  canRetry,
+  groupRisks,
+  noticeDeadlineEmptyText,
+  sortAlerts,
+  splitWarnings,
+} from "../lib/detailModel.js";
 import {
   alertLabel,
   documentTypeLabel,
@@ -162,7 +168,7 @@ function KeyTerms({ result }: { result: ExtractionResult }) {
         label="Notice deadline"
         value={orNull(derived.notice_deadline, formatDate)}
         tag="computed"
-        emptyText="Not computed"
+        emptyText={noticeDeadlineEmptyText(result.auto_renewal.value)}
       />
       <FieldRow
         label={fieldLabel("total_contract_value")}

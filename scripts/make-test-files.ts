@@ -4,15 +4,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
-import { Document, HeadingLevel, Packer, Paragraph } from "docx";
-import PDFDocument from "pdfkit";
+import { HeadingLevel, Paragraph } from "docx";
+import { drawScannedPage, packDocx, renderPdf, writeInMargin } from "./lib/render.js";
 
 const ROOT = fileURLToPath(new URL("../samples/", import.meta.url));
 const PDF_DIR = join(ROOT, "SamplePDFs");
 const DOCX_DIR = join(ROOT, "SampleDocx");
 
-// pdfkit derives the file id from the info dict, so a fixed date makes the output byte for byte stable.
-const FIXED_DATE = new Date("2026-01-01T00:00:00Z");
+const PDF_INFO = { title: "Sample", author: "make-test-files" };
 
 interface PdfPage {
   header?: string;
@@ -20,37 +19,8 @@ interface PdfPage {
   lines: string[];
 }
 
-function renderPdf(draw: (doc: PDFKit.PDFDocument) => void): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({
-      autoFirstPage: false,
-      size: "A4",
-      info: { CreationDate: FIXED_DATE, Title: "Sample", Author: "make-test-files" },
-    });
-    const chunks: Buffer[] = [];
-    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-    doc.on("error", reject);
-    draw(doc);
-    doc.end();
-  });
-}
-
-// Header and footer sit in the margins. pdfkit starts a new page for text below the bottom margin,
-// so the margin is lifted while the footer is written.
-function writeInMargin(doc: PDFKit.PDFDocument, text: string, y: number): void {
-  const bottom = doc.page.margins.bottom;
-  doc.page.margins.bottom = 0;
-  doc.fontSize(9).text(text, doc.page.margins.left, y, {
-    width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
-    align: "center",
-    lineBreak: false,
-  });
-  doc.page.margins.bottom = bottom;
-}
-
 function textPdf(pages: PdfPage[]): Promise<Buffer> {
-  return renderPdf((doc) => {
+  return renderPdf(PDF_INFO, (doc) => {
     for (const page of pages) {
       doc.addPage();
       if (page.header) writeInMargin(doc, page.header, 30);
@@ -125,35 +95,17 @@ const LONG_AGREEMENT: string[][] = [
   ],
 ];
 
-// Grey blocks and rules roughly where a scanned page has its text, but no text objects at all.
 function scannedPdf(): Promise<Buffer> {
-  return renderPdf((doc) => {
-    for (let page = 0; page < 2; page++) {
-      doc.addPage();
-      doc.rect(60, 60, doc.page.width - 120, doc.page.height - 120).stroke("#999999");
-      doc.rect(80, 90, 220, 18).fill("#cccccc");
-      for (let row = 0; row < 28; row++) {
-        const y = 140 + row * 22;
-        const width = row % 5 === 4 ? 260 : 420;
-        doc
-          .moveTo(80, y)
-          .lineTo(80 + width, y)
-          .lineWidth(6)
-          .stroke("#bbbbbb");
-      }
-    }
+  return renderPdf(PDF_INFO, (doc) => {
+    for (let page = 0; page < 2; page++) drawScannedPage(doc);
   });
-}
-
-function docx(children: Paragraph[]): Promise<Buffer> {
-  return Packer.toBuffer(new Document({ sections: [{ children }] }));
 }
 
 const heading = (text: string) => new Paragraph({ text, heading: HeadingLevel.HEADING_1 });
 const para = (text: string) => new Paragraph(text);
 
 function supplierAgreementDocx(): Promise<Buffer> {
-  return docx([
+  return packDocx([
     new Paragraph({ text: "Supplier Agreement", heading: HeadingLevel.TITLE }),
     para(
       "This Supplier Agreement is dated 10 June 2026 and is between Halvorsen Facility Services AS, " +
@@ -268,7 +220,7 @@ async function main(): Promise<void> {
       Buffer.from("This is a plain text file with a .pdf extension, not a PDF.\n", "utf8"),
     ],
     [join(DOCX_DIR, "contract.docx"), supplierAgreementDocx()],
-    [join(DOCX_DIR, "empty.docx"), docx([])],
+    [join(DOCX_DIR, "empty.docx"), packDocx([])],
     [
       join(DOCX_DIR, "not-a-docx.docx"),
       plainZip("readme.txt", "A plain zip archive with a .docx extension, not a Word document.\n"),

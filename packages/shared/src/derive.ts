@@ -110,12 +110,15 @@ export function deriveDates(
 
   const currentTermEnd = end === null ? null : toIso(end);
   const nextRenewal = end !== null && autoRenews ? toIso(addDays(end, 1)) : null;
-  const deadline = end !== null && noticeDays !== null ? addDays(end, -noticeDays) : null;
+  // Only for a contract that renews: on one that just ends, the notice period is for terminating
+  // early and "notice by" would be a deadline that does nothing.
+  const deadline =
+    end !== null && autoRenews && noticeDays !== null ? addDays(end, -noticeDays) : null;
   const noticeDeadline = deadline === null ? null : toIso(deadline);
   const daysLeft = deadline === null ? null : differenceInCalendarDays(deadline, now);
 
   const alerts: Alert[] = [];
-  if (daysLeft !== null && noticeDeadline !== null && autoRenews) {
+  if (daysLeft !== null && noticeDeadline !== null) {
     const renews = renewalMonths
       ? `Contract auto-renews for ${String(renewalMonths)} months if no notice is given.`
       : "Contract auto-renews if no notice is given.";

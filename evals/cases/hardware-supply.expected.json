@@ -1,0 +1,25 @@
+{
+  "file": "samples/generated/hardware-supply.pdf",
+  "expect_status": "completed",
+  "fields": {
+    "vendor_name": "Ferrox Industrial Components S.A.",
+    "document_type": "contract",
+    "effective_date": "2026-06-01",
+    "initial_term_months": 36,
+    "auto_renewal": false,
+    "total_contract_value": {
+      "amount": 1200000,
+      "currency": "USD"
+    },
+    "payment_terms": "Net 45",
+    "governing_law": "Luxembourg"
+  },
+  "must_be_null": ["renewal_term_months", "termination_notice_days"],
+  "risk_categories": ["unilateral_price_increase", "penalties_liquidated_damages", "exclusivity"],
+  "must_not_risk_categories": ["auto_renewal"],
+  "derived": {
+    "expiration_date": "2029-05-31",
+    "notice_deadline": null
+  },
+  "injection_check": null
+}

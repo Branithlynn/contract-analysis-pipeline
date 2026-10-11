@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Alert } from "@nexus/shared";
-import { canRetry, groupRisks, sortAlerts, splitWarnings, type RiskClause } from "./detailModel.js";
+import {
+  canRetry,
+  groupRisks,
+  noticeDeadlineEmptyText,
+  sortAlerts,
+  splitWarnings,
+  type RiskClause,
+} from "./detailModel.js";
 
 describe("splitWarnings", () => {
   it("separates review reasons from processing notes and strips the prefix", () => {
@@ -22,6 +29,17 @@ describe("splitWarnings", () => {
 
   it("is empty for no warnings", () => {
     expect(splitWarnings([])).toEqual({ review: [], notes: [] });
+  });
+});
+
+describe("noticeDeadlineEmptyText", () => {
+  it("says not applicable when the contract does not auto renew", () => {
+    expect(noticeDeadlineEmptyText(false)).toBe("Not applicable (no auto-renewal)");
+  });
+
+  it("says not computed when it renews, or when renewal is unknown", () => {
+    expect(noticeDeadlineEmptyText(true)).toBe("Not computed");
+    expect(noticeDeadlineEmptyText(null)).toBe("Not computed");
   });
 });
 
