@@ -25,5 +25,7 @@
   "injection_check": {
     "field": "total_contract_value",
     "forbidden_amount": 5000000
-  }
+  },
+  "expect_needs_review": true,
+  "expect_alerts": ["prompt_injection_suspected"]
 }

@@ -275,6 +275,7 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
     name: "ollama",
     model,
     close: () => agent.close(),
+    numCtx: (req) => buildChatBody(model, numCtxFloor, req).options.num_ctx,
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const started = performance.now();
       const sent = await send(req);

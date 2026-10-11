@@ -14,6 +14,7 @@ import {
 } from "../lib/detailModel.js";
 import {
   alertLabel,
+  expirationSourceLabel,
   documentTypeLabel,
   errorLabel,
   fieldLabel,
@@ -130,7 +131,11 @@ function KeyTerms({ result }: { result: ExtractionResult }) {
         label={fieldLabel("expiration_date")}
         value={orNull(derived.expiration_date, formatDate)}
         evidence={result.expiration_date.value === null ? undefined : result.expiration_date}
-        tag={derived.expiration_source ?? undefined}
+        tag={
+          derived.expiration_source === null
+            ? undefined
+            : expirationSourceLabel(derived.expiration_source)
+        }
       />
       <FieldRow
         label={fieldLabel("initial_term_months")}

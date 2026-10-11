@@ -58,7 +58,7 @@ export function normalizeForMatch(text: string): string {
     .trim();
 }
 
-function splitPages(fullText: string): { page: number | null; text: string }[] {
+export function splitPages(fullText: string): { page: number | null; text: string }[] {
   const markers = [...fullText.matchAll(PAGE_MARKER)];
   if (markers.length === 0) return [{ page: null, text: fullText }];
   const pages: { page: number | null; text: string }[] = [];
@@ -202,28 +202,47 @@ function fuzzyMatch(
   };
 }
 
-export function verifyQuote(index: GroundingIndex, quote: string): QuoteCheck {
+export interface Span {
+  // Offsets in GroundingIndex.text.
+  start: number;
+  end: number;
+}
+
+function matchQuote(index: GroundingIndex, quote: string): { check: QuoteCheck; spans: Span[] } {
   // A quote the model shortened with "..." must match piece by piece, in order.
   const segments = normalizeForMatch(quote)
     .split(ELLIPSIS)
     .map((s) => s.trim())
     .filter((s) => s.length >= MIN_SEGMENT_CHARS);
-  if (segments.length === 0) return NOT_FOUND;
+  if (segments.length === 0) return { check: NOT_FOUND, spans: [] };
 
   let from = 0;
-  let start: number | null = null;
   let score = 1;
   let method: "exact" | "fuzzy" = "exact";
+  const spans: Span[] = [];
   for (const segment of segments) {
     let match: Match | { score: number } | null = exactMatch(index, segment, from);
     if (!match && segment.length >= MIN_FUZZY_CHARS) match = fuzzyMatch(index, segment, from);
-    if (!match || !("start" in match)) return { ...NOT_FOUND, score: match?.score ?? 0 };
-    start ??= match.start;
+    if (!match || !("start" in match)) {
+      return { check: { ...NOT_FOUND, score: match?.score ?? 0 }, spans: [] };
+    }
+    spans.push({ start: match.start, end: match.end });
     from = match.end;
     score = Math.min(score, match.score);
     if (match.method === "fuzzy") method = "fuzzy";
   }
-  return { verified: true, method, page: pageAt(index, start ?? 0), score };
+  const page = pageAt(index, spans[0]?.start ?? 0);
+  return { check: { verified: true, method, page, score }, spans };
+}
+
+export function verifyQuote(index: GroundingIndex, quote: string): QuoteCheck {
+  return matchQuote(index, quote).check;
+}
+
+// Where a verified quote sits in the document, one span per "..." piece. Empty when it was not
+// found. The injection filter needs the place, not just the fact that the text exists.
+export function quoteSpans(index: GroundingIndex, quote: string): Span[] {
+  return matchQuote(index, quote).spans;
 }
 
 interface UngroundedField {

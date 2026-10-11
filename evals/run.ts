@@ -1,32 +1,31 @@
 // Runs the extraction pipeline over the generated samples and scores each one against its
 // hand-written expectation. No queue and no db: this measures extraction quality, not infra.
-// Usage: npm run eval -- --provider <p> --model <m> [--cases <glob>] [--repeat <n>]
-import { globSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// Usage: npm run eval -- --provider <p> --model <m> [--cases <name or glob>] [--repeat <n>]
+import { mkdirSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { MIME_FORMATS } from "@nexus/shared";
 import { createLogger, loadConfig } from "@nexus/shared/node";
-import { z } from "zod";
 import { llmEnvFromArgs } from "../scripts/lib/llm-env.js";
 import { createProvider } from "../services/worker/src/llm/factory.js";
 import { PROMPT_VERSION } from "../services/worker/src/llm/prompts/extract.v1.js";
 import { analyzeDocument, type AnalyzeDeps } from "../services/worker/src/pipeline/analyze.js";
 import { classifyError } from "../services/worker/src/pipeline/errors.js";
+import { CASE_SUFFIX, caseNames, expectedStatus, findCaseFiles, readCase } from "./cases.js";
 import { renderReport, type CaseRun, type ReportHeader } from "./report.js";
-import { ExpectedCaseSchema, scoreCase, type CaseOutcome, type ExpectedCase } from "./score.js";
+import { scoreCase, type CaseOutcome, type ExpectedCase } from "./score.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const RESULTS_DIR = join(ROOT, "evals", "results");
 const DEFAULT_CASES = "evals/cases/*.expected.json";
-const CASE_SUFFIX = ".expected.json";
 // Derived dates depend on today. A fixed day keeps a run from last week comparable with one from
 // today, and it is the day the expected dates were worked out for.
 const CLOCK = "2026-10-09";
 
 const USAGE =
-  "usage: npm run eval -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--cases <glob>] [--repeat <n>]";
+  "usage: npm run eval -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--cases <name or glob>] [--repeat <n>]";
 
 function fail(message: string): never {
   console.error(`${message}\n${USAGE}`);
@@ -43,14 +42,17 @@ interface LoadedCase {
 }
 
 function loadCases(pattern: string): LoadedCase[] {
-  const files = globSync(pattern, { cwd: ROOT })
-    .filter((file) => file.endsWith(CASE_SUFFIX))
-    .sort();
-  if (files.length === 0) fail(`no case files match ${pattern}`);
+  const files = findCaseFiles(pattern, ROOT);
+  if (files.length === 0) {
+    const names = caseNames(ROOT).map((name) => `  ${name}`);
+    fail(`no case matches "${pattern}". Available cases:\n${names.join("\n")}`);
+  }
   return files.map((file) => {
-    const parsed = ExpectedCaseSchema.safeParse(JSON.parse(readFileSync(join(ROOT, file), "utf8")));
-    if (!parsed.success) fail(`${file} is not a valid case:\n${z.prettifyError(parsed.error)}`);
-    return { name: basename(file, CASE_SUFFIX), expected: parsed.data };
+    try {
+      return { name: basename(file, CASE_SUFFIX), expected: readCase(join(ROOT, file)) };
+    } catch (err) {
+      return fail(message(err));
+    }
   });
 }
 
@@ -58,12 +60,6 @@ function mimeFor(file: string): string {
   const ext = extname(file).slice(1).toLowerCase();
   for (const [mime, format] of MIME_FORMATS) if (format === ext) return mime;
   return fail(`${file}: unsupported extension ".${ext}"`);
-}
-
-function expectedStatus(expected: ExpectedCase): string {
-  return expected.expect_error_code === undefined
-    ? expected.expect_status
-    : `${expected.expect_status} ${expected.expect_error_code}`;
 }
 
 // The stored result goes into the raw json only, for looking up why a case scored the way it did.
@@ -97,6 +93,7 @@ async function runCase(test: LoadedCase, label: string, deps: AnalyzeDeps): Prom
       chunks: analysis.meta.chunkCount,
       inputTokens: analysis.meta.tokens.inputTokens,
       outputTokens: analysis.meta.tokens.outputTokens,
+      calls: analysis.meta.calls,
     };
   } catch (err) {
     // The same classification the job runner stores on a failed document. One bad case must not

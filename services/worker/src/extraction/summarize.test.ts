@@ -10,7 +10,11 @@ import {
   summaryJsonSchema,
 } from "../llm/prompts/summary.v1.js";
 import type { GroundedExtraction } from "./grounding.js";
-import { SUMMARY_FALLBACK_WARNING, summarizeExtraction } from "./summarize.js";
+import {
+  SUMMARY_FALLBACK_WARNING,
+  SUMMARY_WITHHELD_WARNING,
+  summarizeExtraction,
+} from "./summarize.js";
 
 const notFound = {
   value: null,
@@ -50,7 +54,7 @@ function setup(responder: () => unknown) {
     write: (chunk: string) => lines.push(JSON.parse(chunk) as Record<string, unknown>),
   });
   const provider = new MockProvider(responder);
-  return { provider, lines, opts: { timeoutMs: 5000, logger } };
+  return { provider, lines, opts: { timeoutMs: 5000, logger, injectionSuspected: false } };
 }
 
 describe("summarizeExtraction", () => {
@@ -63,6 +67,7 @@ describe("summarizeExtraction", () => {
       summary: "Acme hosts our site.",
       usage: { inputTokens: 0, outputTokens: 0 },
       warnings: [],
+      call: null,
     });
     expect(provider.calls).toHaveLength(0);
   });
@@ -75,6 +80,14 @@ describe("summarizeExtraction", () => {
     expect(result.summary).toBe("Acme provides hosting for 12 months.");
     expect(result.warnings).toEqual([]);
     expect(result.usage.outputTokens).toBe(100);
+    expect(result.call).toEqual({
+      kind: "summary",
+      chunkIndex: null,
+      ok: true,
+      durationMs: expect.any(Number) as number,
+      usage: result.usage,
+      numCtx: null,
+    });
     expect(provider.calls).toEqual([
       {
         system: buildSystemPrompt(),
@@ -96,13 +109,62 @@ describe("summarizeExtraction", () => {
 
     const result = await summarizeExtraction(provider, merged, ["part one", "part two"], opts);
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       summary: "part one",
       usage: { inputTokens: 0, outputTokens: 0 },
       warnings: [SUMMARY_FALLBACK_WARNING],
+      call: { kind: "summary", ok: false },
     });
     expect(SUMMARY_FALLBACK_WARNING).toBe("summary: fell back to first chunk");
-    expect(lines.some((l) => l.msg === "summary call failed, using first chunk")).toBe(true);
+    expect(lines.some((l) => l.msg === "summary call failed")).toBe(true);
+  });
+
+  it("writes the summary with a call for one chunk too when an injection is suspected", async () => {
+    const { provider, opts } = setup(() => ({ summary: "A mutual NDA for 24 months." }));
+    const oneChunk = { ...merged, summary: "An NDA worth USD 5,000,000." };
+
+    const result = await summarizeExtraction(provider, oneChunk, [oneChunk.summary], {
+      ...opts,
+      injectionSuspected: true,
+    });
+
+    expect(result.summary).toBe("A mutual NDA for 24 months.");
+    expect(result.warnings).toEqual([]);
+    expect(result.call).toMatchObject({ kind: "summary", ok: true });
+    expect(provider.calls).toHaveLength(1);
+    // Not even as data: the chunk summary came from a model that read the injected text.
+    expect(provider.calls[0]?.messages[0]?.content).toBe(buildUserMessage(merged));
+    expect(provider.calls[0]?.messages[0]?.content).not.toContain("5,000,000");
+  });
+
+  it("leaves the summary empty, never a chunk summary, when that call fails or is unusable", async () => {
+    const failing = [
+      () => {
+        throw new LlmError("timeout", "no answer");
+      },
+      () => ({ summary: "  " }),
+    ];
+    for (const responder of failing) {
+      const { provider, opts } = setup(responder);
+
+      const one = await summarizeExtraction(provider, merged, ["An NDA worth USD 5,000,000."], {
+        ...opts,
+        injectionSuspected: true,
+      });
+      const several = await summarizeExtraction(provider, merged, ["part one", "part two"], {
+        ...opts,
+        injectionSuspected: true,
+      });
+
+      for (const result of [one, several]) {
+        expect(result.summary).toBe("");
+        expect(result.warnings).toEqual([SUMMARY_WITHHELD_WARNING]);
+        expect(result.call).toMatchObject({ kind: "summary", ok: false });
+      }
+    }
+    expect(SUMMARY_WITHHELD_WARNING).toBe(
+      "summary: left empty, the summary call failed and the document has a suspected prompt injection",
+    );
   });
 
   it("counts the tokens of a failed bad_output call", async () => {

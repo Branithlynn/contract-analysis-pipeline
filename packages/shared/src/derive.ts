@@ -6,6 +6,7 @@ import {
   format,
   parseISO,
 } from "date-fns";
+import { expirationBasis } from "./expiration.js";
 import type { Alert, Derived, ExtractionResult, Severity } from "./schemas/extraction.js";
 
 // The model extracts facts, this does the date math. Pure and browser safe: the api reruns it on
@@ -26,8 +27,11 @@ type FactName =
   | "termination_notice_days"
   | "auto_renewal";
 
-// Only the values are read, so stored results and the worker's in-between shapes both fit.
-export type DeriveFields = { [K in FactName]: { value: ExtractionResult[K]["value"] } };
+// Only the values are read, plus the expiration's quote and whether it was found in the document,
+// so stored results and the worker's in-between shapes both fit.
+export type DeriveFields = { [K in FactName]: { value: ExtractionResult[K]["value"] } } & {
+  expiration_date: { quote: string | null; quote_verified: boolean };
+};
 
 const URGENT_DAYS = 30;
 const SOON_DAYS = 90;
@@ -63,11 +67,17 @@ export function deriveDates(
   risks: readonly { severity: Severity }[],
   groundingScore: number | null,
   threshold: number,
+  // Passages the worker flagged as addressed to an ai. Only the pages are read.
+  suspectedInjections: readonly { page: number | null }[],
   today: string,
 ): Derived {
   const now = toDate(today);
   const effective = fields.effective_date.value;
-  const stated = fields.expiration_date.value;
+  // A date the model worked out itself from the term is not a stated date. It is left out of what
+  // follows as if the field were empty: nothing was stated, so there is nothing to disagree with.
+  const basis = expirationBasis(fields.expiration_date);
+  const modelDate = basis === "model_computed" ? fields.expiration_date.value : null;
+  const stated = basis === "model_computed" ? null : fields.expiration_date.value;
   const initial = fields.initial_term_months.value;
   const renewalMonths = fields.renewal_term_months.value ?? initial;
   const noticeDays = fields.termination_notice_days.value;
@@ -76,7 +86,15 @@ export function deriveDates(
 
   const computed =
     effective !== null && initial !== null ? toIso(termEnd(toDate(effective), initial)) : null;
-  const expiration = stated ?? computed;
+  // A stated date whose quote was not found may be made up (the 7b once returned 2024-10-01 with no
+  // quote for a term starting in 2026), so it loses to arithmetic on the start date and the term.
+  // With nothing to compute it stays, and review flags it.
+  const useComputed = stated === null || (basis === "unverified" && computed !== null);
+  // The model's date is the last resort, for when there is no start date or term to compute from.
+  // No date means no notice deadline, and on a contract that renews by itself that is worse than a
+  // date nobody could check. Review flags it by the source.
+  const useModel = useComputed && computed === null && modelDate !== null;
+  const expiration = useModel ? modelDate : useComputed ? computed : stated;
   // Models compute the expiration themselves despite the prompt, and are sometimes right. When the
   // stated and computed dates disagree, a person should look. An alert, not a merge conflict:
   // this is recomputed on every read, conflicts are stored once.
@@ -118,6 +136,19 @@ export function deriveDates(
   const daysLeft = deadline === null ? null : differenceInCalendarDays(deadline, now);
 
   const alerts: Alert[] = [];
+  // First, because it puts every other value on the page in doubt.
+  if (suspectedInjections.length > 0) {
+    const pages = [...new Set(suspectedInjections.map((p) => p.page))]
+      .filter((page) => page !== null)
+      .sort((a, b) => a - b);
+    const where =
+      pages.length === 0 ? "" : ` on page${pages.length > 1 ? "s" : ""} ${pages.join(", ")}`;
+    alerts.push({
+      level: "critical",
+      code: "prompt_injection_suspected",
+      message: `The document contains text addressed to an AI system${where}. Values quoted from it were removed. Read the document yourself.`,
+    });
+  }
   if (daysLeft !== null && noticeDeadline !== null) {
     const renews = renewalMonths
       ? `Contract auto-renews for ${String(renewalMonths)} months if no notice is given.`
@@ -169,7 +200,8 @@ export function deriveDates(
 
   return {
     expiration_date: expiration,
-    expiration_source: stated !== null ? "stated" : computed !== null ? "computed" : null,
+    expiration_source:
+      expiration === null ? null : useModel ? "model" : useComputed ? "computed" : "stated",
     current_term_end: currentTermEnd,
     next_renewal_date: nextRenewal,
     notice_deadline: noticeDeadline,

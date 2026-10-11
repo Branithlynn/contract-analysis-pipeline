@@ -1,4 +1,10 @@
-import { REVIEW_PREFIX, type Alert, type AlertCode } from "@nexus/shared";
+import {
+  REVIEW_PREFIX,
+  type Alert,
+  type AlertCode,
+  type ExpirationSource,
+  type SuspectedInjection,
+} from "@nexus/shared";
 import type { GroundedExtraction } from "./grounding.js";
 import type { Conflict } from "./merge.js";
 
@@ -9,6 +15,9 @@ export interface ReviewInput {
   groundingScore: number | null;
   threshold: number;
   alerts: readonly Alert[];
+  injections: readonly SuspectedInjection[];
+  // From the derived block, so review and deriveDates read the same decision.
+  expirationSource: ExpirationSource | null;
 }
 
 export interface ReviewDecision {
@@ -35,8 +44,22 @@ const REVIEW_ALERTS: Partial<Record<AlertCode, string>> = {
   renewal_term_unknown: "auto-renews but the renewal term is unknown",
 };
 
+// Long enough to recognise the passage in the document, which is the only way to find it in a docx.
+const MAX_EXCERPT_CHARS = 160;
+
+function excerpt(text: string): string {
+  return text.length <= MAX_EXCERPT_CHARS ? text : `${text.slice(0, MAX_EXCERPT_CHARS)}...`;
+}
+
 export function decideNeedsReview(input: ReviewInput): ReviewDecision {
   const reasons: string[] = [];
+
+  // Always, even when nothing was quoted from the passage: a document that talks to the model may
+  // have steered it in ways the quote check can't see, like leaving a risk out.
+  for (const passage of input.injections) {
+    const where = passage.page === null ? "" : ` on page ${String(passage.page)}`;
+    reasons.push(`possible prompt injection${where}: "${excerpt(passage.text)}"`);
+  }
 
   if (input.groundingScore !== null && input.groundingScore < input.threshold) {
     const pct = (n: number) => `${String(Math.round(n * 100))}%`;
@@ -64,6 +87,12 @@ export function decideNeedsReview(input: ReviewInput): ReviewDecision {
   for (const alert of input.alerts) {
     const reason = REVIEW_ALERTS[alert.code];
     if (reason) reasons.push(reason);
+  }
+  // The dashboard's dates hang on a date that is in no clause and that we could not recompute.
+  if (input.expirationSource === "model") {
+    reasons.push(
+      "expiration date was computed by the model, not stated in the document and not checkable",
+    );
   }
 
   return { needsReview: reasons.length > 0, reasons: reasons.map((r) => REVIEW_PREFIX + r) };

@@ -2,6 +2,7 @@ import type {
   AlertCode,
   DocumentType,
   ErrorCode,
+  ExpirationSource,
   ExtractedFieldName,
   RiskCategory,
 } from "@nexus/shared";
@@ -112,10 +113,23 @@ const ALERT_LABELS: Record<AlertCode, string> = {
   no_notice_period: "No notice period",
   expiration_mismatch: "Expiration mismatch",
   renewal_term_unknown: "Renewal term unknown",
+  prompt_injection_suspected: "Possible prompt injection",
 };
 
 export function alertLabel(code: AlertCode): string {
   return ALERT_LABELS[code];
+}
+
+// The tag next to the expiration date. "model" has to read as a caution: that date is in no clause
+// and we could not recompute it.
+const EXPIRATION_SOURCE_LABELS: Record<ExpirationSource, string> = {
+  stated: "stated",
+  computed: "computed",
+  model: "model's estimate, unchecked",
+};
+
+export function expirationSourceLabel(source: ExpirationSource): string {
+  return EXPIRATION_SOURCE_LABELS[source];
 }
 
 const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {

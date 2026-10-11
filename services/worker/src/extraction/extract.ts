@@ -16,7 +16,14 @@ import {
   buildSystemPrompt,
   buildUserMessage,
 } from "../llm/prompts/extract.v1.js";
-import type { LlmMessage, LlmProvider, LlmResponse, LlmUsage } from "../llm/types.js";
+import type {
+  LlmCallInfo,
+  LlmMessage,
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmUsage,
+} from "../llm/types.js";
 import { PermanentError } from "../pipeline/errors.js";
 import type { Chunk } from "./chunk.js";
 
@@ -32,15 +39,27 @@ export interface ChunkExtraction {
   usage: LlmUsage;
   repaired: boolean;
   latencyMs: number;
+  // One entry per provider call, in order: the first attempt, then the repair or retry if any.
+  calls: LlmCallInfo[];
 }
 
 // Enough for the model to see what to fix, small enough not to blow up the repair prompt.
 const MAX_REPAIR_ERRORS_CHARS = 2000;
 const NOT_JSON = "Reply was not valid JSON";
 
-type Attempt =
-  | { ok: true; data: LlmExtraction; usage: LlmUsage }
-  | { ok: false; usage: LlmUsage; errors: string; retry: (doc: string) => LlmMessage[] };
+type Timing = Pick<LlmCallInfo, "durationMs" | "numCtx">;
+
+type Attempt = Timing &
+  (
+    | { ok: true; data: LlmExtraction; usage: LlmUsage }
+    | {
+        ok: false;
+        usage: LlmUsage;
+        errors: string;
+        retryKind: "repair" | "retry";
+        retry: (doc: string) => LlmMessage[];
+      }
+  );
 
 const ZERO: LlmUsage = { inputTokens: 0, outputTokens: 0 };
 
@@ -84,16 +103,20 @@ async function attempt(
   messages: LlmMessage[],
   timeoutMs: number,
 ): Promise<Attempt> {
+  const req: LlmRequest = {
+    system: buildSystemPrompt(),
+    messages,
+    schema: llmExtractionJsonSchema(),
+    schemaName: SCHEMA_NAME,
+    timeoutMs,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+  };
+  const numCtx = provider.numCtx?.(req) ?? null;
+  const started = performance.now();
+  const timing = (): Timing => ({ durationMs: Math.round(performance.now() - started), numCtx });
   let res: LlmResponse;
   try {
-    res = await provider.complete({
-      system: buildSystemPrompt(),
-      messages,
-      schema: llmExtractionJsonSchema(),
-      schemaName: SCHEMA_NAME,
-      timeoutMs,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-    });
+    res = await provider.complete(req);
   } catch (err) {
     // Timeouts, rate limits and the rest are bullmq's to retry, not something a repair can fix.
     if (!(err instanceof LlmError) || err.kind !== "bad_output") throw err;
@@ -101,9 +124,11 @@ async function attempt(
     // A cut-off or empty reply never goes back as the assistant turn, see buildRetryConversation.
     const note = err.truncated ? TRUNCATED_NOTE : rawText.trim() === "" ? EMPTY_REPLY_NOTE : null;
     return {
+      ...timing(),
       ok: false,
       usage: err.usage ?? ZERO,
       errors: note === null ? `${NOT_JSON}: ${err.message}` : err.message,
+      retryKind: note === null ? "repair" : "retry",
       retry:
         note === null
           ? (doc) => buildRepairConversation(doc, rawText, NOT_JSON)
@@ -112,12 +137,14 @@ async function attempt(
   }
 
   const parsed = LlmExtractionSchema.safeParse(lowercaseEnums(res.json));
-  if (parsed.success) return { ok: true, data: parsed.data, usage: res.usage };
+  if (parsed.success) return { ...timing(), ok: true, data: parsed.data, usage: res.usage };
   const errors = z.prettifyError(parsed.error).slice(0, MAX_REPAIR_ERRORS_CHARS);
   return {
+    ...timing(),
     ok: false,
     usage: res.usage,
     errors,
+    retryKind: "repair",
     retry: (doc) => buildRepairConversation(doc, res.rawText, errors),
   };
 }
@@ -131,18 +158,32 @@ export async function extractChunk(
 ): Promise<ChunkExtraction> {
   const started = performance.now();
   const doc = buildUserMessage({ filename, text: chunk.text, chunkIndex: chunk.index, chunkCount });
+  const calls: LlmCallInfo[] = [];
+  const record = (kind: LlmCallInfo["kind"], a: Attempt): void => {
+    calls.push({
+      kind,
+      chunkIndex: chunk.index,
+      ok: a.ok,
+      durationMs: a.durationMs,
+      usage: a.usage,
+      numCtx: a.numCtx,
+    });
+  };
   const done = (data: LlmExtraction, usage: LlmUsage, repaired: boolean): ChunkExtraction => ({
     chunkIndex: chunk.index,
     data,
     usage,
     repaired,
     latencyMs: Math.round(performance.now() - started),
+    calls,
   });
 
   const first = await attempt(provider, [{ role: "user", content: doc }], timeoutMs);
+  record("extract", first);
   if (first.ok) return done(first.data, first.usage, false);
 
   const second = await attempt(provider, first.retry(doc), timeoutMs);
+  record(first.retryKind, second);
   const usage = addUsage(first.usage, second.usage);
   if (second.ok) return done(second.data, usage, true);
 

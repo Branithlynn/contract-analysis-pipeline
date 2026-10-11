@@ -225,6 +225,8 @@ describe("createOllamaProvider", () => {
 
     // 27 system + 36300 message chars = 36327 -> 12109 tokens, + 512 + 4096 = 16717 -> 17408
     expect(fetchMock.mock.calls.map(([, init]) => numCtxOf(init))).toEqual([17408, FLOOR]);
+    // What the eval records per call has to be the number that was really sent.
+    expect([provider.numCtx?.(repair), provider.numCtx?.(request)]).toEqual([17408, FLOOR]);
   });
 
   it("gives extraction and summary calls the same floor, so ollama doesn't reload between them", async () => {

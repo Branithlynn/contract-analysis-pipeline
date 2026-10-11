@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { AlertCode, ErrorCode } from "@nexus/shared";
+import { AlertCode, ErrorCode, ExpirationSource } from "@nexus/shared";
 import {
   alertLabel,
   errorLabel,
+  expirationSourceLabel,
   formatCount,
   formatDate,
   formatDateTime,
@@ -109,6 +110,17 @@ describe("formatCount and plural", () => {
   it("adds the s only when needed", () => {
     expect(plural(1, "chunk")).toBe("1 chunk");
     expect(plural(3, "chunk")).toBe("3 chunks");
+  });
+});
+
+describe("expirationSourceLabel", () => {
+  it("has a label for every source and keeps the two the ui already showed", () => {
+    for (const source of ExpirationSource.options) {
+      expect(expirationSourceLabel(source).length).toBeGreaterThan(0);
+    }
+    expect(expirationSourceLabel("stated")).toBe("stated");
+    expect(expirationSourceLabel("computed")).toBe("computed");
+    expect(expirationSourceLabel("model")).toBe("model's estimate, unchecked");
   });
 });
 

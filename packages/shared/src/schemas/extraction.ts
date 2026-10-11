@@ -158,10 +158,13 @@ export const AlertCode = z.enum([
   "no_notice_period",
   "expiration_mismatch",
   "renewal_term_unknown",
+  "prompt_injection_suspected",
 ]);
 export type AlertCode = z.infer<typeof AlertCode>;
 
-export const ExpirationSource = z.enum(["stated", "computed"]);
+// stated: written out in the document. computed: our arithmetic on the start date and the term.
+// model: the model's own arithmetic, kept only when we have nothing to compute from.
+export const ExpirationSource = z.enum(["stated", "computed", "model"]);
 export type ExpirationSource = z.infer<typeof ExpirationSource>;
 
 const Derived = z.strictObject({
@@ -176,6 +179,15 @@ const Derived = z.strictObject({
 });
 export type Derived = z.infer<typeof Derived>;
 export type Alert = Derived["alerts"][number];
+
+// A passage of the document that addresses an ai instead of stating a contract term. Stored so the
+// alert can be rebuilt on every read, the same way grounding_score backs low_grounding.
+const SuspectedInjection = z.strictObject({
+  // 1-based, null when the format has no pages (docx).
+  page: z.int().min(1).nullable(),
+  text: z.string(),
+});
+export type SuspectedInjection = z.infer<typeof SuspectedInjection>;
 
 export const ExtractedFieldName = LlmExtractionSchema.keyof().exclude(["risk_clauses", "summary"]);
 export type ExtractedFieldName = z.infer<typeof ExtractedFieldName>;
@@ -216,5 +228,7 @@ export const ExtractionResultSchema = z.strictObject({
   conflicts: z.array(Conflict),
   warnings: z.array(z.string()),
   grounding_score: z.number().min(0).max(1).nullable(),
+  // Defaulted, so rows and eval results stored before this field existed still parse.
+  suspected_injections: z.array(SuspectedInjection).default([]),
 });
 export type ExtractionResult = z.infer<typeof ExtractionResultSchema>;

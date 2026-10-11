@@ -11,10 +11,21 @@ function facts(values: {
   renewal_term_months?: number | null;
   termination_notice_days?: number | null;
   auto_renewal?: boolean | null;
+  // Whether the stated expiration's quote was found in the document. Most tests don't care.
+  expiration_verified?: boolean;
+  // Defaults to a quote that has the date in it, which is what makes a date count as stated.
+  expiration_quote?: string | null;
 }): DeriveFields {
   return {
     effective_date: { value: values.effective_date ?? null },
-    expiration_date: { value: values.expiration_date ?? null },
+    expiration_date: {
+      value: values.expiration_date ?? null,
+      quote:
+        values.expiration_quote === undefined
+          ? `expires on ${values.expiration_date ?? ""}`
+          : values.expiration_quote,
+      quote_verified: values.expiration_verified ?? true,
+    },
     initial_term_months: { value: values.initial_term_months ?? null },
     renewal_term_months: { value: values.renewal_term_months ?? null },
     termination_notice_days: { value: values.termination_notice_days ?? null },
@@ -23,7 +34,7 @@ function facts(values: {
 }
 
 function derive(fields: DeriveFields, risks: { severity: "low" | "medium" | "high" }[] = []) {
-  return deriveDates(fields, risks, 1, THRESHOLD, TODAY);
+  return deriveDates(fields, risks, 1, THRESHOLD, [], TODAY);
 }
 
 describe("deriveDates", () => {
@@ -198,6 +209,166 @@ describe("deriveDates", () => {
     ]);
   });
 
+  it("keeps a stated expiration whose quote was found, even when the arithmetic differs", () => {
+    const d = derive(
+      facts({
+        expiration_date: "2028-06-30",
+        expiration_verified: true,
+        effective_date: "2026-04-01",
+        initial_term_months: 24,
+      }),
+    );
+
+    expect(d.expiration_date).toBe("2028-06-30");
+    expect(d.expiration_source).toBe("stated");
+    expect(d.alerts.map((a) => a.code)).toEqual(["expiration_mismatch"]);
+  });
+
+  it("uses the computed expiration over a stated one whose quote was not found", () => {
+    // What the 7b returned for the MSA sample: a date two years before the contract starts.
+    const d = derive(
+      facts({
+        expiration_date: "2024-10-01",
+        expiration_verified: false,
+        effective_date: "2026-02-01",
+        initial_term_months: 24,
+        renewal_term_months: 12,
+        termination_notice_days: 90,
+        auto_renewal: true,
+      }),
+    );
+
+    expect(d.expiration_date).toBe("2028-01-31");
+    expect(d.expiration_source).toBe("computed");
+    expect(d.current_term_end).toBe("2028-01-31");
+    expect(d.notice_deadline).toBe("2027-11-02");
+    expect(d.alerts).toEqual([
+      {
+        level: "warning",
+        code: "expiration_mismatch",
+        message:
+          "Stated expiration 2024-10-01 differs from effective date + term (2028-01-31). Check the contract.",
+      },
+    ]);
+  });
+
+  it("ignores a date the model computed itself: verified quote, but the date is not in it", () => {
+    // qwen on the nda sample, one day late.
+    const d = derive(
+      facts({
+        expiration_date: "2028-09-10",
+        expiration_verified: true,
+        expiration_quote:
+          "This Agreement continues for 24 months from the Effective Date and then expires.",
+        effective_date: "2026-09-10",
+        initial_term_months: 24,
+        auto_renewal: false,
+      }),
+    );
+
+    expect(d.expiration_date).toBe("2028-09-09");
+    expect(d.expiration_source).toBe("computed");
+    expect(d.current_term_end).toBe("2028-09-09");
+    // Nothing was stated, so there is no mismatch to report.
+    expect(d.alerts).toEqual([]);
+  });
+
+  it("keeps the model's own date, marked as such, when there is nothing to compute from", () => {
+    // No effective date. Dropping the date would also drop the notice deadline of a contract that
+    // renews by itself.
+    const d = derive(
+      facts({
+        expiration_date: "2027-09-10",
+        expiration_quote: "continues for 12 months from the Effective Date",
+        initial_term_months: 12,
+        renewal_term_months: 12,
+        termination_notice_days: 60,
+        auto_renewal: true,
+      }),
+    );
+
+    expect(d).toMatchObject({
+      expiration_date: "2027-09-10",
+      expiration_source: "model",
+      current_term_end: "2027-09-10",
+      next_renewal_date: "2027-09-11",
+      notice_deadline: "2027-07-12",
+    });
+    // Nothing was stated and nothing was computed, so there are no two dates to disagree.
+    expect(d.alerts.map((a) => a.code)).not.toContain("expiration_mismatch");
+  });
+
+  it("prefers our own arithmetic over the model's as soon as there is something to compute from", () => {
+    const d = derive(
+      facts({
+        expiration_date: "2027-09-10",
+        expiration_quote: "continues for 12 months from the Effective Date",
+        effective_date: "2026-09-10",
+        initial_term_months: 12,
+      }),
+    );
+
+    expect(d.expiration_date).toBe("2027-09-09");
+    expect(d.expiration_source).toBe("computed");
+  });
+
+  it("counts a date written out in the verified quote as stated, and still flags a mismatch", () => {
+    // gpt-5-mini on the consulting sample.
+    const quote = "and continues until 31 August 2026, when it expires.";
+    const agrees = derive(
+      facts({
+        expiration_date: "2026-08-31",
+        expiration_quote: quote,
+        effective_date: "2026-03-01",
+        initial_term_months: 6,
+      }),
+    );
+    const differs = derive(
+      facts({
+        expiration_date: "2026-08-31",
+        expiration_quote: quote,
+        effective_date: "2026-03-01",
+        initial_term_months: 12,
+      }),
+    );
+
+    expect(agrees.expiration_date).toBe("2026-08-31");
+    expect(agrees.expiration_source).toBe("stated");
+    // TODAY is past the end date and the contract does not renew.
+    expect(agrees.alerts.map((a) => a.code)).toEqual(["expired"]);
+    expect(differs.expiration_date).toBe("2026-08-31");
+    expect(differs.expiration_source).toBe("stated");
+    expect(differs.alerts.map((a) => a.code)).toEqual(["expired", "expiration_mismatch"]);
+  });
+
+  it("treats an unverified quote the same whether or not it has the date in it", () => {
+    for (const quote of ["This Agreement continues until 31 August 2026.", "for 6 months", null]) {
+      const d = derive(
+        facts({
+          expiration_date: "2026-08-31",
+          expiration_verified: false,
+          expiration_quote: quote,
+          effective_date: "2026-03-01",
+          initial_term_months: 12,
+        }),
+      );
+
+      expect(d.expiration_date).toBe("2027-02-28");
+      expect(d.expiration_source).toBe("computed");
+      expect(d.alerts.map((a) => a.code)).toEqual(["expiration_mismatch"]);
+    }
+  });
+
+  it("keeps an unverified stated expiration when there is nothing to compute it from", () => {
+    const d = derive(
+      facts({ expiration_date: "2027-06-30", expiration_verified: false, initial_term_months: 12 }),
+    );
+
+    expect(d.expiration_date).toBe("2027-06-30");
+    expect(d.expiration_source).toBe("stated");
+    expect(d.alerts).toEqual([]);
+  });
+
   it("flags auto renewal without a notice period and leaves the deadline null", () => {
     const d = derive(
       facts({ expiration_date: "2027-03-31", renewal_term_months: 12, auto_renewal: true }),
@@ -231,6 +402,7 @@ describe("deriveDates", () => {
       [{ severity: "high" }, { severity: "medium" }, { severity: "high" }],
       0.625,
       THRESHOLD,
+      [],
       TODAY,
     );
 
@@ -242,7 +414,32 @@ describe("deriveDates", () => {
         message: "Only 63% of quotes were found in the document. Verify values manually.",
       },
     ]);
-    expect(deriveDates(facts({}), [], null, THRESHOLD, TODAY).alerts).toEqual([]);
+    expect(deriveDates(facts({}), [], null, THRESHOLD, [], TODAY).alerts).toEqual([]);
+  });
+
+  it("puts a suspected prompt injection first, with its pages", () => {
+    const d = deriveDates(
+      facts({}),
+      [{ severity: "high" }],
+      1,
+      THRESHOLD,
+      [{ page: 4 }, { page: 2 }, { page: 4 }],
+      TODAY,
+    );
+    const noPages = deriveDates(facts({}), [], 1, THRESHOLD, [{ page: null }], TODAY);
+
+    expect(d.alerts).toEqual([
+      {
+        level: "critical",
+        code: "prompt_injection_suspected",
+        message:
+          "The document contains text addressed to an AI system on pages 2, 4. Values quoted from it were removed. Read the document yourself.",
+      },
+      { level: "warning", code: "high_risk", message: "1 high-severity risk clause(s)." },
+    ]);
+    expect(noPages.alerts.map((a) => a.message)).toEqual([
+      "The document contains text addressed to an AI system. Values quoted from it were removed. Read the document yourself.",
+    ]);
   });
 
   it("keeps the alert order fixed", () => {
@@ -258,6 +455,7 @@ describe("deriveDates", () => {
       [{ severity: "high" }],
       0.5,
       THRESHOLD,
+      [],
       TODAY,
     );
 
@@ -277,7 +475,7 @@ describe("deriveDates", () => {
       auto_renewal: true,
     });
     const termEndOn = (today: string) =>
-      deriveDates(jan31, [], 1, THRESHOLD, today).current_term_end;
+      deriveDates(jan31, [], 1, THRESHOLD, [], today).current_term_end;
 
     expect(termEndOn("2024-02-10")).toBe("2024-02-28");
     expect(termEndOn("2024-03-01")).toBe("2024-03-30");

@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import {
   deriveDates,
   ErrorCode,
+  expirationBasis,
   ExtractionResultSchema,
   type ExtractionResult,
   type Stage,
@@ -11,6 +12,7 @@ import type { WorkerDeps } from "../deps.js";
 import { chunkText } from "../extraction/chunk.js";
 import { extractChunk, type ChunkExtraction } from "../extraction/extract.js";
 import { buildGroundingIndex, groundExtraction, groundingScore } from "../extraction/grounding.js";
+import { buildInjectionGuard, dropInjected } from "../extraction/injection.js";
 import { mapLimit } from "../extraction/limit.js";
 import { mergeExtractions } from "../extraction/merge.js";
 import { normalizeExtraction } from "../extraction/normalize.js";
@@ -18,7 +20,7 @@ import { decideNeedsReview } from "../extraction/review.js";
 import { summarizeExtraction } from "../extraction/summarize.js";
 import { concurrencyFor } from "../llm/concurrency.js";
 import { PROMPT_VERSION } from "../llm/prompts/extract.v1.js";
-import type { LlmUsage } from "../llm/types.js";
+import type { LlmCallInfo, LlmUsage } from "../llm/types.js";
 import { parseDocument, type ParsedDocument } from "../parse/index.js";
 import { PermanentError } from "./errors.js";
 
@@ -46,6 +48,8 @@ export interface AnalysisMeta {
   chunkCount: number;
   // Every call, including failed repairs and the summary.
   tokens: LlmUsage;
+  // The same calls one by one, chunks in order and the summary last.
+  calls: LlmCallInfo[];
   durationMs: number;
 }
 
@@ -104,29 +108,64 @@ async function validate(
   parsed: ParsedDocument,
   extractions: readonly ChunkExtraction[],
   deps: AnalyzeDeps,
-): Promise<{ result: ExtractionResult; needsReview: boolean; summaryUsage: LlmUsage }> {
+): Promise<{
+  result: ExtractionResult;
+  needsReview: boolean;
+  summaryUsage: LlmUsage;
+  summaryCall: LlmCallInfo | null;
+}> {
   const { config, logger, provider } = deps;
   const threshold = config.GROUNDING_REVIEW_THRESHOLD;
   const index = buildGroundingIndex(parsed.text);
+  const guard = buildInjectionGuard(index, parsed.text);
   const warnings: string[] = [];
+  if (guard.passages.length > 0) {
+    logger.warn(
+      { passages: guard.passages },
+      "document has text addressed to an ai, values quoted from it are dropped",
+    );
+  }
 
   const grounded = extractions.map((e) => {
     const normalized = normalizeExtraction(e.data);
     warnings.push(...normalized.warnings);
-    return { chunkIndex: e.chunkIndex, data: groundExtraction(index, normalized.data).data };
+    // Per chunk and before the merge: an injected value must not win it, become a conflict
+    // candidate or reach the summary call.
+    const clean = dropInjected(index, guard, groundExtraction(index, normalized.data).data);
+    warnings.push(...clean.warnings);
+    return { chunkIndex: e.chunkIndex, data: clean.data };
   });
   const merged = mergeExtractions(grounded);
   const summary = await summarizeExtraction(
     provider,
     merged.data,
     grounded.map((g) => g.data.summary),
-    { timeoutMs: config.LLM_TIMEOUT_MS, logger },
+    { timeoutMs: config.LLM_TIMEOUT_MS, logger, injectionSuspected: guard.passages.length > 0 },
   );
   warnings.push(...summary.warnings);
 
   const score = groundingScore(merged.data);
   const today = deps.clock().toISOString().slice(0, 10);
-  const derived = deriveDates(merged.data, merged.data.risk_clauses, score, threshold, today);
+  const derived = deriveDates(
+    merged.data,
+    merged.data.risk_clauses,
+    score,
+    threshold,
+    guard.passages,
+    today,
+  );
+  // deriveDates replaced such a date with its own, here and on every read. Not a review reason:
+  // nothing was stated, so there is nothing for a person to compare. The warning says where the
+  // date went. When deriveDates had to keep it (source "model"), review flags that instead.
+  const modelExpiration = merged.data.expiration_date;
+  if (
+    expirationBasis(modelExpiration) === "model_computed" &&
+    derived.expiration_source !== "model"
+  ) {
+    warnings.push(
+      `expiration_date: ignored ${JSON.stringify(modelExpiration.value)}, the date is not in its quote, so the model computed it`,
+    );
+  }
   const review = decideNeedsReview({
     data: merged.data,
     conflicts: merged.conflicts,
@@ -134,6 +173,8 @@ async function validate(
     groundingScore: score,
     threshold,
     alerts: derived.alerts,
+    injections: guard.passages,
+    expirationSource: derived.expiration_source,
   });
 
   // Every step above builds the strict shape by construction, so a failure here is our bug, not
@@ -146,6 +187,7 @@ async function validate(
     // The same normalize warning can come from several chunks.
     warnings: [...new Set([...warnings, ...review.reasons])],
     grounding_score: score,
+    suspected_injections: guard.passages,
   });
   if (!parsedResult.success) {
     throw new PermanentError(
@@ -157,6 +199,7 @@ async function validate(
     result: parsedResult.data,
     needsReview: review.needsReview,
     summaryUsage: summary.usage,
+    summaryCall: summary.call,
   };
 }
 
@@ -171,7 +214,7 @@ export async function analyzeDocument(
 
   const parsed = await onStage("parsing", () => parseDocument(path, input.mime, deps.logger));
   const extractions = await onStage("extracting", () => extractAll(parsed, input, deps));
-  const { result, needsReview, summaryUsage } = await onStage("validating", () =>
+  const { result, needsReview, summaryUsage, summaryCall } = await onStage("validating", () =>
     validate(parsed, extractions, deps),
   );
 
@@ -186,6 +229,7 @@ export async function analyzeDocument(
       promptVersion: PROMPT_VERSION,
       chunkCount: extractions.length,
       tokens,
+      calls: [...extractions.flatMap((e) => e.calls), ...(summaryCall ? [summaryCall] : [])],
       durationMs: Math.round(performance.now() - started),
     },
   };

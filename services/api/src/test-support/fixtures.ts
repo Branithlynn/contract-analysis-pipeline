@@ -53,7 +53,8 @@ export function extractionResult(overrides: Partial<ExtractionResult> = {}): Ext
     liability_cap: field(null),
     // Term ends 2026-07-11, 30 days notice: the deadline is NOW + 10 days.
     effective_date: field("2025-07-12"),
-    expiration_date: field("2026-07-11"),
+    // The date has to be in the quote to count as stated, see expirationBasis.
+    expiration_date: { ...field("2026-07-11"), quote: "and expires on 11 July 2026" },
     initial_term_months: field(12),
     renewal_term_months: field(12),
     termination_notice_days: field(30),

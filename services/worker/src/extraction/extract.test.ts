@@ -55,6 +55,16 @@ describe("extractChunk", () => {
     expect(result).toMatchObject({ chunkIndex: 1, data: MOCK_EXTRACTION, repaired: false });
     expect(result.usage.outputTokens).toBe(100);
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(result.calls).toEqual([
+      {
+        kind: "extract",
+        chunkIndex: 1,
+        ok: true,
+        durationMs: expect.any(Number) as number,
+        usage: result.usage,
+        numCtx: null,
+      },
+    ]);
     expect(provider.calls).toEqual([
       {
         system: buildSystemPrompt(),
@@ -121,6 +131,23 @@ describe("extractChunk", () => {
     expect(second?.messages).toEqual(
       buildRepairConversation(doc, JSON.stringify(broken()), errors),
     );
+    expect(result.calls.map((call) => [call.kind, call.ok])).toEqual([
+      ["extract", false],
+      ["repair", true],
+    ]);
+    expect(result.calls[0]?.usage.outputTokens).toBe(100);
+  });
+
+  it("records the num_ctx of each call when the provider has one", async () => {
+    const provider = scripted(broken, ok);
+    // Like ollama: the repair carries the bad reply, so it needs a bigger context.
+    const sized = Object.assign(provider, {
+      numCtx: (req: LlmRequest) => (req.messages.length > 1 ? 12288 : 8192),
+    });
+
+    const result = await extractChunk(sized, chunk, opts);
+
+    expect(result.calls.map((call) => call.numCtx)).toEqual([8192, 12288]);
   });
 
   it("cuts the error list for the repair call to 2000 chars", async () => {
@@ -174,6 +201,7 @@ describe("extractChunk", () => {
     const result = await extractChunk(provider, chunk, opts);
 
     expect(result.repaired).toBe(true);
+    expect(result.calls.map((call) => call.kind)).toEqual(["extract", "retry"]);
     expect(provider.calls[1]?.messages).toEqual(buildRetryConversation(doc, TRUNCATED_NOTE));
   });
 

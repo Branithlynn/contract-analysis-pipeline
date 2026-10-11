@@ -29,10 +29,27 @@ export interface LlmResponse {
   latencyMs: number;
 }
 
+// One provider call as the eval report shows it. Recorded for failed calls too: a reply that could
+// not be used still took the time.
+export interface LlmCallInfo {
+  // "repair" sends the bad reply back with the errors, "retry" asks again after a cut-off or empty one.
+  kind: "extract" | "repair" | "retry" | "summary";
+  // 0-based, null for the summary.
+  chunkIndex: number | null;
+  ok: boolean;
+  durationMs: number;
+  usage: LlmUsage;
+  // Null for providers without a context size setting.
+  numCtx: number | null;
+}
+
 export interface LlmProvider {
   name: LlmProviderName;
   model: string;
   complete(req: LlmRequest): Promise<LlmResponse>;
+  // The context size this request would be sent with. Only ollama has one, and it reloads the model
+  // when it changes, so the eval records it per call.
+  numCtx?(req: LlmRequest): number;
   // For providers that hold connections open. Called once on worker shutdown.
   close?(): Promise<void>;
 }

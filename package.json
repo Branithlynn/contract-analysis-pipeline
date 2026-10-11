@@ -28,6 +28,8 @@
     "samples": "tsx scripts/make-samples.ts",
     "preeval": "tsc -b",
     "eval": "tsx evals/run.ts",
+    "preeval:rescore": "tsc -b",
+    "eval:rescore": "tsx evals/rescore.ts",
     "prellm-smoke": "tsc -b",
     "llm-smoke": "tsx scripts/llm-smoke.ts"
   },

@@ -67,6 +67,7 @@ export function withFreshDerived(result: ExtractionResult, ctx: ReadContext): Ex
     result.risk_clauses,
     result.grounding_score,
     ctx.groundingThreshold,
+    result.suspected_injections,
     ctx.today,
   );
   return { ...result, derived };

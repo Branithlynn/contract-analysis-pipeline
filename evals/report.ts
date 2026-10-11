@@ -1,10 +1,25 @@
 // Turns scored runs into the markdown report. Pure, so the layout can be tested without a model.
 import { casePassed, rate, type CaseScore, type Ratio } from "./score.js";
 
+// One provider call. The same shape the worker records, repeated here so the report stays free of
+// worker imports.
+export interface CallInfo {
+  kind: "extract" | "repair" | "retry" | "summary";
+  // 0-based, null for the summary.
+  chunkIndex: number | null;
+  ok: boolean;
+  durationMs: number;
+  usage: { inputTokens: number; outputTokens: number };
+  // Null for providers without a context size (everything but ollama).
+  numCtx: number | null;
+}
+
 export interface RunMeta {
   chunks: number;
   inputTokens: number;
   outputTokens: number;
+  // Missing in runs saved before calls were recorded.
+  calls?: CallInfo[] | undefined;
 }
 
 export interface CaseRun {
@@ -128,6 +143,65 @@ export function mismatches(run: CaseRun, expectedStatus: string): string[] {
       `${label}.injection: expected the injected amount to be ignored, got it in the result`,
     );
   }
+  if (score.needs_review_ok === false) {
+    lines.push(
+      `${label}.needs_review: expected ${String(!score.needs_review)}, got ${String(score.needs_review)}`,
+    );
+  }
+  for (const code of score.missing_alerts) {
+    lines.push(`${label}.alerts: expected ${code}, not raised`);
+  }
+  return lines;
+}
+
+// A slow document is easier to explain call by call: a repair doubles the work, and a changed
+// num_ctx makes ollama load the model again before it answers.
+function callLines(runs: readonly CaseRun[]): string[] {
+  const recorded = runs.filter((run) => run.meta?.calls !== undefined);
+  if (recorded.length === 0) return ["Not recorded for this run."];
+
+  const rows: string[][] = [];
+  const changes: string[] = [];
+  let previous: { numCtx: number; label: string } | null = null;
+  for (const run of recorded) {
+    for (const [i, call] of (run.meta?.calls ?? []).entries()) {
+      rows.push([
+        run.label,
+        String(i + 1),
+        call.ok ? call.kind : `${call.kind} (unusable reply)`,
+        call.chunkIndex === null ? NONE : String(call.chunkIndex + 1),
+        seconds(call.durationMs),
+        `${String(call.usage.inputTokens)} / ${String(call.usage.outputTokens)}`,
+        call.numCtx === null ? NONE : String(call.numCtx),
+      ]);
+      if (call.numCtx === null) continue;
+      if (previous !== null && previous.numCtx !== call.numCtx) {
+        const from =
+          previous.label === run.label
+            ? `the call before it in the same document used ${String(previous.numCtx)}`
+            : `the last call of ${previous.label} used ${String(previous.numCtx)}`;
+        changes.push(
+          `- ${run.label}: call ${String(i + 1)} (${call.kind}) ran with num_ctx ${String(call.numCtx)}, ${from}`,
+        );
+      }
+      previous = { numCtx: call.numCtx, label: run.label };
+    }
+  }
+
+  const lines = table(
+    ["case", "call", "kind", "chunk", "duration", "tokens in / out", "num_ctx"],
+    rows,
+  );
+  lines.push("");
+  if (previous === null) lines.push("This provider has no num_ctx.");
+  else if (changes.length === 0) lines.push("num_ctx was the same for every call.");
+  else {
+    lines.push(
+      "num_ctx changed between calls. Ollama reloads the model when num_ctx changes, so each of these calls includes a model load:",
+      "",
+      ...changes,
+    );
+  }
   return lines;
 }
 
@@ -136,9 +210,12 @@ export interface ReportInput {
   runs: readonly CaseRun[];
   // The status each run was expected to end in, e.g. "failed NO_TEXT_LAYER". Same order as runs.
   expectedStatuses: readonly string[];
+  // Printed under the header, one paragraph each. A rescore says here what it did not rerun.
+  notes?: readonly string[];
 }
 
-export function renderReport({ header, runs, expectedStatuses }: ReportInput): string {
+export function renderReport(input: ReportInput): string {
+  const { header, runs, expectedStatuses } = input;
   const lines: string[] = [
     `# Eval: ${header.provider} / ${header.model}`,
     "",
@@ -150,6 +227,7 @@ export function renderReport({ header, runs, expectedStatuses }: ReportInput): s
     `- cpu: ${header.cpu}`,
     `- repeat: ${String(header.repeat)}`,
     "",
+    ...(input.notes ?? []).flatMap((note) => [note, ""]),
     "## Cases",
     "",
     ...table(
@@ -224,6 +302,6 @@ export function renderReport({ header, runs, expectedStatuses }: ReportInput): s
     for (const reason of run.score.review_reasons) lines.push(`- ${run.label}: review, ${reason}`);
     for (const field of run.score.conflicts) lines.push(`- ${run.label}: conflict on ${field}`);
   }
-  lines.push("");
+  lines.push("", "## Calls", "", ...callLines(runs), "");
   return lines.join("\n");
 }
