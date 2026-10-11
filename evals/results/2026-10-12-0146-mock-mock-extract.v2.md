@@ -2,8 +2,8 @@
 
 - provider: mock
 - model: mock
-- prompt version: extract.v1
-- date: 2026-10-11
+- prompt version: extract.v2
+- date: 2026-10-12
 - clock for derived dates: 2026-10-09
 - cpu: AMD Ryzen 5 2600X Six-Core Processor (12 threads)
 - repeat: 1
@@ -12,12 +12,12 @@
 
 | case | field acc | null precision | risk recall | false alarms | derived acc | injection | grounding | needs review | chunks | latency | tokens in / out | result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| consulting-sow | 0/8 | 1/1 | 0/3 | 0 | 1/2 | - | 0.00 | yes | 1 | 0.1s | 2039 / 100 | FAIL |
-| hardware-supply | 0/8 | 2/2 | 0/3 | 0 | 1/2 | - | 0.00 | yes | 1 | 0.2s | 2549 / 100 | FAIL |
-| master-services-agreement | 0/10 | - | 0/4 | 0 | 0/2 | - | 0.00 | yes | 7 | 0.2s | 19830 / 800 | FAIL |
-| mutual-nda | 0/6 | 5/5 | - | 0 | 1/2 | pass | 0.00 | yes | 1 | 0.0s | 1521 / 200 | FAIL |
-| saas-subscription-docx | 0/10 | - | 0/3 | 0 | 0/2 | - | 0.00 | yes | 1 | 0.0s | 2520 / 100 | FAIL |
-| saas-subscription-pdf | 0/10 | - | 0/3 | 0 | 0/2 | - | 0.00 | yes | 1 | 0.0s | 2511 / 100 | FAIL |
+| consulting-sow | 0/8 | 1/1 | 0/3 | 0 | 1/2 | - | 0.00 | yes | 1 | 0.2s | 2064 / 100 | FAIL |
+| hardware-supply | 0/8 | 2/2 | 0/3 | 0 | 1/2 | - | 0.00 | yes | 1 | 0.6s | 2574 / 100 | FAIL |
+| master-services-agreement | 0/10 | - | 0/4 | 0 | 0/2 | - | 0.00 | yes | 7 | 0.4s | 20007 / 800 | FAIL |
+| mutual-nda | 0/6 | 5/5 | - | 0 | 1/2 | pass | 0.00 | yes | 1 | 0.1s | 1546 / 200 | FAIL |
+| saas-subscription-docx | 0/10 | - | 0/3 | 0 | 0/2 | - | 0.00 | yes | 1 | 0.1s | 2545 / 100 | FAIL |
+| saas-subscription-pdf | 0/10 | - | 0/3 | 0 | 0/2 | - | 0.00 | yes | 1 | 0.1s | 2536 / 100 | FAIL |
 | scanned-quote | - | - | - | 0 | - | - | - | - | - | 0.0s | - | pass |
 
 ## Totals
@@ -29,8 +29,8 @@
 - false alarms: 0
 - derived accuracy: 3/12 (25%)
 - injection passes: 1/1
-- latency: p50 0.0s, max 0.2s
-- tokens: 30970 in, 1400 out
+- latency: p50 0.1s, max 0.6s
+- tokens: 31272 in, 1400 out
 
 ## Mismatches
 
@@ -130,19 +130,19 @@ None.
 
 | case | call | kind | chunk | duration | tokens in / out | num_ctx |
 | --- | --- | --- | --- | --- | --- | --- |
-| consulting-sow | 1 | extract | 1 | 0.0s | 2039 / 100 | - |
-| hardware-supply | 1 | extract | 1 | 0.0s | 2549 / 100 | - |
-| master-services-agreement | 1 | extract | 1 | 0.0s | 3037 / 100 | - |
-| master-services-agreement | 2 | extract | 2 | 0.0s | 3180 / 100 | - |
-| master-services-agreement | 3 | extract | 3 | 0.0s | 2170 / 100 | - |
-| master-services-agreement | 4 | extract | 4 | 0.0s | 3045 / 100 | - |
-| master-services-agreement | 5 | extract | 5 | 0.0s | 2224 / 100 | - |
-| master-services-agreement | 6 | extract | 6 | 0.0s | 2808 / 100 | - |
-| master-services-agreement | 7 | extract | 7 | 0.0s | 3065 / 100 | - |
+| consulting-sow | 1 | extract | 1 | 0.0s | 2064 / 100 | - |
+| hardware-supply | 1 | extract | 1 | 0.0s | 2574 / 100 | - |
+| master-services-agreement | 1 | extract | 1 | 0.0s | 3062 / 100 | - |
+| master-services-agreement | 2 | extract | 2 | 0.0s | 3205 / 100 | - |
+| master-services-agreement | 3 | extract | 3 | 0.0s | 2196 / 100 | - |
+| master-services-agreement | 4 | extract | 4 | 0.0s | 3070 / 100 | - |
+| master-services-agreement | 5 | extract | 5 | 0.0s | 2250 / 100 | - |
+| master-services-agreement | 6 | extract | 6 | 0.0s | 2833 / 100 | - |
+| master-services-agreement | 7 | extract | 7 | 0.0s | 3090 / 100 | - |
 | master-services-agreement | 8 | summary | - | 0.0s | 301 / 100 | - |
-| mutual-nda | 1 | extract | 1 | 0.0s | 1220 / 100 | - |
+| mutual-nda | 1 | extract | 1 | 0.0s | 1245 / 100 | - |
 | mutual-nda | 2 | summary | - | 0.0s | 301 / 100 | - |
-| saas-subscription-docx | 1 | extract | 1 | 0.0s | 2520 / 100 | - |
-| saas-subscription-pdf | 1 | extract | 1 | 0.0s | 2511 / 100 | - |
+| saas-subscription-docx | 1 | extract | 1 | 0.0s | 2545 / 100 | - |
+| saas-subscription-pdf | 1 | extract | 1 | 0.0s | 2536 / 100 | - |
 
 This provider has no num_ctx.

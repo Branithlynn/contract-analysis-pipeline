@@ -1,9 +1,9 @@
-import { llmExtractionJsonSchema } from "@nexus/shared";
-import type { Config } from "@nexus/shared/node";
+import type { Config, ExtractPromptVersion } from "@nexus/shared/node";
 import { createAnthropicProvider } from "./anthropic.js";
 import { MockProvider } from "./mock.js";
 import { contextFloor, createOllamaProvider } from "./ollama.js";
-import * as extract from "./prompts/extract.v1.js";
+import { extractPrompt } from "./prompts/extract.js";
+import { MAX_OUTPUT_TOKENS } from "./prompts/extract.v1.js";
 import * as summary from "./prompts/summary.v1.js";
 import { createOpenAIProvider } from "./openai.js";
 import type { LlmProvider } from "./types.js";
@@ -15,13 +15,15 @@ function requireKey(key: string | undefined, name: string): string {
 }
 
 // Every kind of call the worker makes to ollama, so they all share one num_ctx. The extraction
-// budget is the larger one, so it decides the floor.
-export function ollamaContextFloor(maxInputChars: number): number {
+// budget is the larger one, so it decides the floor. Sized for the prompt version in use: a longer
+// system prompt or field guide needs its own room next to the document.
+export function ollamaContextFloor(maxInputChars: number, version: ExtractPromptVersion): number {
+  const extract = extractPrompt(version);
   return contextFloor(maxInputChars, [
     {
-      system: extract.buildSystemPrompt(),
-      schema: llmExtractionJsonSchema(),
-      maxOutputTokens: extract.MAX_OUTPUT_TOKENS,
+      system: extract.system,
+      schema: extract.schema,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
     },
     {
       system: summary.buildSystemPrompt(),
@@ -37,7 +39,7 @@ export function createProvider(config: Config): LlmProvider {
       return createOllamaProvider({
         baseUrl: config.OLLAMA_URL,
         model: config.LLM_MODEL,
-        numCtxFloor: ollamaContextFloor(config.LLM_MAX_INPUT_CHARS),
+        numCtxFloor: ollamaContextFloor(config.LLM_MAX_INPUT_CHARS, config.PROMPT_VERSION),
         timeoutMs: config.LLM_TIMEOUT_MS,
       });
     case "anthropic":

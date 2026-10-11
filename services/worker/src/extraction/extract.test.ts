@@ -14,12 +14,18 @@ import {
   buildSystemPrompt,
   buildUserMessage,
 } from "../llm/prompts/extract.v1.js";
+import { extractPrompt } from "../llm/prompts/extract.js";
 import type { LlmRequest } from "../llm/types.js";
 import { PermanentError } from "../pipeline/errors.js";
 import { extractChunk } from "./extract.js";
 
 const chunk = { index: 1, text: "[[page 2]]\n4. Fees\n\nUSD 1,000 per month." };
-const opts = { filename: "msa.pdf", chunkCount: 3, timeoutMs: 5000 };
+const opts = {
+  filename: "msa.pdf",
+  chunkCount: 3,
+  timeoutMs: 5000,
+  prompt: extractPrompt("extract.v1"),
+};
 const doc = buildUserMessage({
   filename: "msa.pdf",
   text: chunk.text,
@@ -75,6 +81,22 @@ describe("extractChunk", () => {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
       },
     ]);
+  });
+
+  it("sends the system prompt and schema of the prompt version it is given, on the repair too", async () => {
+    const provider = scripted(broken, ok);
+    const v2 = extractPrompt("extract.v2");
+
+    await extractChunk(provider, chunk, { ...opts, prompt: v2 });
+
+    expect(v2.system).not.toBe(buildSystemPrompt());
+    for (const call of provider.calls) {
+      expect(call.system).toBe(v2.system);
+      expect(call.schema).toEqual(v2.schema);
+      expect(call.schemaName).toBe(SCHEMA_NAME);
+    }
+    // The document message is the same in every version.
+    expect(provider.calls[0]?.messages).toEqual([{ role: "user", content: doc }]);
   });
 
   it("lowercases enum strings so 'High' doesn't cost a repair call", async () => {

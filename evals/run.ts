@@ -1,6 +1,6 @@
 // Runs the extraction pipeline over the generated samples and scores each one against its
 // hand-written expectation. No queue and no db: this measures extraction quality, not infra.
-// Usage: npm run eval -- --provider <p> --model <m> [--cases <name or glob>] [--repeat <n>]
+// Usage: npm run eval -- --provider <p> --model <m> [--prompt <version>] [--cases <name or glob>] [--repeat <n>]
 import { mkdirSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
@@ -10,7 +10,6 @@ import { MIME_FORMATS } from "@nexus/shared";
 import { createLogger, loadConfig } from "@nexus/shared/node";
 import { llmEnvFromArgs } from "../scripts/lib/llm-env.js";
 import { createProvider } from "../services/worker/src/llm/factory.js";
-import { PROMPT_VERSION } from "../services/worker/src/llm/prompts/extract.v1.js";
 import { analyzeDocument, type AnalyzeDeps } from "../services/worker/src/pipeline/analyze.js";
 import { classifyError } from "../services/worker/src/pipeline/errors.js";
 import { CASE_SUFFIX, caseNames, expectedStatus, findCaseFiles, readCase } from "./cases.js";
@@ -25,7 +24,7 @@ const DEFAULT_CASES = "evals/cases/*.expected.json";
 const CLOCK = "2026-10-09";
 
 const USAGE =
-  "usage: npm run eval -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--cases <name or glob>] [--repeat <n>]";
+  "usage: npm run eval -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt extract.v1|extract.v2] [--cases <name or glob>] [--repeat <n>]";
 
 function fail(message: string): never {
   console.error(`${message}\n${USAGE}`);
@@ -132,6 +131,7 @@ async function main(): Promise<void> {
     options: {
       provider: { type: "string" },
       model: { type: "string" },
+      prompt: { type: "string" },
       cases: { type: "string", default: DEFAULT_CASES },
       repeat: { type: "string", default: "1" },
     },
@@ -178,7 +178,7 @@ async function main(): Promise<void> {
   const header: ReportHeader = {
     provider: provider.name,
     model: provider.model,
-    prompt_version: PROMPT_VERSION,
+    prompt_version: config.PROMPT_VERSION,
     date: localDate(now),
     clock: CLOCK,
     cpu: `${cpu[0]?.model.trim() ?? "unknown"} (${String(cpu.length)} threads)`,

@@ -17,7 +17,7 @@
     "termination_notice_days"
   ],
   "risk_categories": [],
-  "must_not_risk_categories": [],
+  "must_not_risk_categories": ["foreign_governing_law"],
   "derived": {
     "expiration_date": "2028-09-09",
     "notice_deadline": null

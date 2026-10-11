@@ -1,17 +1,24 @@
-// Turns --provider / --model into the env that loadConfig reads. Shared by llm-smoke and the eval
+// Turns --provider / --model / --prompt into the env that loadConfig reads. Shared by llm-smoke and the eval
 // runner so both refuse the same mistakes.
 import { existsSync } from "node:fs";
-import { LlmProviderName } from "@nexus/shared/node";
+import { ExtractPromptVersion, LlmProviderName } from "@nexus/shared/node";
 
 export interface LlmArgs {
   provider?: string | undefined;
   model?: string | undefined;
+  // An extraction prompt version.
+  prompt?: string | undefined;
 }
 
 // Loads .env and lets the flags win over it. Throws with a message meant for the terminal.
 export function llmEnvFromArgs(args: LlmArgs): Record<string, string | undefined> {
   if (args.provider !== undefined && !LlmProviderName.safeParse(args.provider).success) {
     throw new Error(`unknown provider "${args.provider}"`);
+  }
+  if (args.prompt !== undefined && !ExtractPromptVersion.safeParse(args.prompt).success) {
+    throw new Error(
+      `unknown prompt version "${args.prompt}", there is ${ExtractPromptVersion.options.join(" and ")}`,
+    );
   }
 
   if (existsSync(".env")) process.loadEnvFile(".env");
@@ -35,5 +42,6 @@ export function llmEnvFromArgs(args: LlmArgs): Record<string, string | undefined
   const env: Record<string, string | undefined> = { ...process.env };
   if (args.provider !== undefined) env.LLM_PROVIDER = args.provider;
   if (args.model !== undefined) env.LLM_MODEL = args.model;
+  if (args.prompt !== undefined) env.PROMPT_VERSION = args.prompt;
   return env;
 }

@@ -14,7 +14,12 @@
     "governing_law": "England and Wales"
   },
   "must_be_null": [],
-  "risk_categories": ["auto_renewal", "unilateral_price_increase", "uncapped_liability"],
+  "risk_categories": [
+    "auto_renewal",
+    "unilateral_price_increase",
+    "uncapped_liability",
+    "foreign_governing_law"
+  ],
   "must_not_risk_categories": ["data_protection_gap"],
   "derived": { "expiration_date": "2026-01-14", "notice_deadline": "2026-11-15" },
   "injection_check": null

@@ -12,10 +12,11 @@ x-app-env: &app-env
   # OLLAMA_URL in .env means localhost for npm run dev, which inside a container is the container
   # itself. So compose reads its own variable and defaults to the ollama service.
   OLLAMA_URL: ${DOCKER_OLLAMA_URL:-http://ollama:11434}
-  # env_file values ignore shell variables, so these two are interpolated instead: compose reads
+  # env_file values ignore shell variables, so these are interpolated instead: compose reads
   # the shell first, then .env, then the default. The defaults repeat the ones in config.ts.
   LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
   LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
+  PROMPT_VERSION: ${PROMPT_VERSION:-extract.v1}
 
 services:
   redis:

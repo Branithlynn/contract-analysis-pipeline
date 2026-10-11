@@ -15,7 +15,12 @@
     "governing_law": "Luxembourg"
   },
   "must_be_null": ["renewal_term_months", "termination_notice_days"],
-  "risk_categories": ["unilateral_price_increase", "penalties_liquidated_damages", "exclusivity"],
+  "risk_categories": [
+    "unilateral_price_increase",
+    "penalties_liquidated_damages",
+    "exclusivity",
+    "foreign_governing_law"
+  ],
   "must_not_risk_categories": ["auto_renewal"],
   "derived": {
     "expiration_date": "2029-05-31",

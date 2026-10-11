@@ -1,11 +1,7 @@
-import {
-  ErrorCode,
-  LlmExtractionSchema,
-  llmExtractionJsonSchema,
-  type LlmExtraction,
-} from "@nexus/shared";
+import { ErrorCode, LlmExtractionSchema, type LlmExtraction } from "@nexus/shared";
 import { z } from "zod";
 import { LlmError } from "../llm/errors.js";
+import type { ExtractPrompt } from "../llm/prompts/extract.js";
 import {
   EMPTY_REPLY_NOTE,
   MAX_OUTPUT_TOKENS,
@@ -13,7 +9,6 @@ import {
   TRUNCATED_NOTE,
   buildRepairConversation,
   buildRetryConversation,
-  buildSystemPrompt,
   buildUserMessage,
 } from "../llm/prompts/extract.v1.js";
 import type {
@@ -31,6 +26,8 @@ export interface ExtractOptions {
   filename: string;
   chunkCount: number;
   timeoutMs: number;
+  // The system prompt and schema of the configured prompt version.
+  prompt: ExtractPrompt;
 }
 
 export interface ChunkExtraction {
@@ -100,13 +97,14 @@ function addUsage(a: LlmUsage, b: LlmUsage): LlmUsage {
 
 async function attempt(
   provider: LlmProvider,
+  prompt: ExtractPrompt,
   messages: LlmMessage[],
   timeoutMs: number,
 ): Promise<Attempt> {
   const req: LlmRequest = {
-    system: buildSystemPrompt(),
+    system: prompt.system,
     messages,
-    schema: llmExtractionJsonSchema(),
+    schema: prompt.schema,
     schemaName: SCHEMA_NAME,
     timeoutMs,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -154,7 +152,7 @@ async function attempt(
 export async function extractChunk(
   provider: LlmProvider,
   chunk: Chunk,
-  { filename, chunkCount, timeoutMs }: ExtractOptions,
+  { filename, chunkCount, timeoutMs, prompt }: ExtractOptions,
 ): Promise<ChunkExtraction> {
   const started = performance.now();
   const doc = buildUserMessage({ filename, text: chunk.text, chunkIndex: chunk.index, chunkCount });
@@ -178,11 +176,11 @@ export async function extractChunk(
     calls,
   });
 
-  const first = await attempt(provider, [{ role: "user", content: doc }], timeoutMs);
+  const first = await attempt(provider, prompt, [{ role: "user", content: doc }], timeoutMs);
   record("extract", first);
   if (first.ok) return done(first.data, first.usage, false);
 
-  const second = await attempt(provider, first.retry(doc), timeoutMs);
+  const second = await attempt(provider, prompt, first.retry(doc), timeoutMs);
   record(first.retryKind, second);
   const usage = addUsage(first.usage, second.usage);
   if (second.ok) return done(second.data, usage, true);

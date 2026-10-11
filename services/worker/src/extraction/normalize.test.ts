@@ -167,6 +167,53 @@ describe("normalizeExtraction", () => {
     },
   );
 
+  it("drops a governing_law that is a code or a date, saying what the model sent", () => {
+    // All seen in the first eval runs. "DE" was meant as Delaware and reads as Germany.
+    for (const [value, reason] of [
+      ["DE", "a code, not the name of a jurisdiction"],
+      ["LUX", "a code, not the name of a jurisdiction"],
+      ["USA", "a code, not the name of a jurisdiction"],
+      ["uk", "a code, not the name of a jurisdiction"],
+      ["US-NY", "a code, not the name of a jurisdiction"],
+      ["GB-ENG", "a code, not the name of a jurisdiction"],
+      ["us-ca", "a code, not the name of a jurisdiction"],
+      ["FR-75", "a code, not the name of a jurisdiction"],
+      ["2023-01-01", "a date, not a jurisdiction"],
+    ] as const) {
+      const { data, warnings } = normalizeExtraction({
+        ...MOCK_EXTRACTION,
+        governing_law: { value, quote: "governed by the laws of", confidence: "high" },
+      });
+
+      expect(data.governing_law).toEqual({ value: null, quote: null, confidence: "low" });
+      expect(warnings).toEqual([`governing_law: dropped ${JSON.stringify(value)} (${reason})`]);
+    }
+  });
+
+  it("keeps a governing_law that names the jurisdiction, short or long", () => {
+    const names = [
+      "Ohio",
+      "Iowa",
+      "Delaware",
+      "New York",
+      "England and Wales",
+      "Peru",
+      // A dash alone doesn't make a code.
+      "Guinea-Bissau",
+      "Baden-Wuerttemberg",
+      "US-based",
+    ];
+    for (const value of names) {
+      const { data, warnings } = normalizeExtraction({
+        ...MOCK_EXTRACTION,
+        governing_law: { value, quote: "governed by the laws of", confidence: "high" },
+      });
+
+      expect(data.governing_law.value).toBe(value);
+      expect(warnings).toEqual([]);
+    }
+  });
+
   it("keeps a value that only contains a not-found word", () => {
     const { data } = normalizeExtraction(
       withFields({ liability_cap: { value: "None of the above", quote: "x", confidence: "high" } }),

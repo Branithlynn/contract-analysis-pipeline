@@ -11,6 +11,13 @@ describe("loadConfig", () => {
     expect(config.GROUNDING_REVIEW_THRESHOLD).toBe(0.8);
   });
 
+  it("takes an extraction prompt version it knows and defaults to extract.v1", () => {
+    expect(loadConfig({}).PROMPT_VERSION).toBe("extract.v1");
+    expect(loadConfig({ PROMPT_VERSION: "extract.v2" }).PROMPT_VERSION).toBe("extract.v2");
+    expect(loadConfig({ PROMPT_VERSION: "" }).PROMPT_VERSION).toBe("extract.v1");
+    expect(() => loadConfig({ PROMPT_VERSION: "extract.v9" })).toThrow("PROMPT_VERSION");
+  });
+
   it("coerces numeric strings", () => {
     const config = loadConfig({ MAX_UPLOAD_MB: "5", WORKER_CONCURRENCY: "4" });
     expect(config.MAX_UPLOAD_MB).toBe(5);

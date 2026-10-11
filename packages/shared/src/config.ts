@@ -4,6 +4,11 @@ import { DEFAULT_MAX_FILES_PER_REQUEST, DEFAULT_MAX_UPLOAD_MB } from "./limits.j
 export const LlmProviderName = z.enum(["ollama", "anthropic", "openai", "mock"]);
 export type LlmProviderName = z.infer<typeof LlmProviderName>;
 
+// The versions of the extraction prompt the worker has. Listed here so the config can validate the
+// choice; the prompts themselves live in the worker.
+export const ExtractPromptVersion = z.enum(["extract.v1", "extract.v2"]);
+export type ExtractPromptVersion = z.infer<typeof ExtractPromptVersion>;
+
 const PositiveInt = z.coerce.number().int().positive();
 
 const ConfigSchema = z
@@ -20,6 +25,8 @@ const ConfigSchema = z
     MAX_FILES_PER_REQUEST: PositiveInt.default(DEFAULT_MAX_FILES_PER_REQUEST),
     LLM_PROVIDER: LlmProviderName.default("ollama"),
     LLM_MODEL: z.string().default("qwen2.5:7b-instruct"),
+    // Stored on every extraction, so results from different versions can be told apart.
+    PROMPT_VERSION: ExtractPromptVersion.default("extract.v1"),
     OLLAMA_URL: z.url().default("http://localhost:11434"),
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),

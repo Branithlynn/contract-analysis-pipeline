@@ -19,7 +19,7 @@ import { normalizeExtraction } from "../extraction/normalize.js";
 import { decideNeedsReview } from "../extraction/review.js";
 import { summarizeExtraction } from "../extraction/summarize.js";
 import { concurrencyFor } from "../llm/concurrency.js";
-import { PROMPT_VERSION } from "../llm/prompts/extract.v1.js";
+import { extractPrompt } from "../llm/prompts/extract.js";
 import type { LlmCallInfo, LlmUsage } from "../llm/types.js";
 import { parseDocument, type ParsedDocument } from "../parse/index.js";
 import { PermanentError } from "./errors.js";
@@ -80,6 +80,7 @@ async function extractAll(
     filename: input.filename,
     chunkCount: chunks.length,
     timeoutMs: config.LLM_TIMEOUT_MS,
+    prompt: extractPrompt(config.PROMPT_VERSION),
   };
   const limit = concurrencyFor(
     provider,
@@ -226,7 +227,7 @@ export async function analyzeDocument(
     meta: {
       provider: deps.provider.name,
       model: deps.provider.model,
-      promptVersion: PROMPT_VERSION,
+      promptVersion: deps.config.PROMPT_VERSION,
       chunkCount: extractions.length,
       tokens,
       calls: [...extractions.flatMap((e) => e.calls), ...(summaryCall ? [summaryCall] : [])],

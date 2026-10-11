@@ -1,19 +1,19 @@
 // One real extraction call against one file, to check a provider end to end by hand.
-// Usage: npm run llm-smoke -- <file> [--provider ollama|anthropic|openai|mock] [--model <name>]
+// Usage: npm run llm-smoke -- <file> [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt <version>]
 // The flags override .env, so all providers can be tried without editing it.
 import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { parseArgs } from "node:util";
-import { LlmExtractionSchema, MIME_FORMATS, llmExtractionJsonSchema } from "@nexus/shared";
+import { LlmExtractionSchema, MIME_FORMATS } from "@nexus/shared";
 import { createLogger, loadConfig } from "@nexus/shared/node";
 import { z } from "zod";
 import { LlmError } from "../services/worker/src/llm/errors.js";
 import { createProvider, ollamaContextFloor } from "../services/worker/src/llm/factory.js";
 import { buildChatBody } from "../services/worker/src/llm/ollama.js";
+import { extractPrompt } from "../services/worker/src/llm/prompts/extract.js";
 import {
   MAX_OUTPUT_TOKENS,
   SCHEMA_NAME,
-  buildSystemPrompt,
   buildUserMessage,
 } from "../services/worker/src/llm/prompts/extract.v1.js";
 import type { LlmRequest } from "../services/worker/src/llm/types.js";
@@ -23,7 +23,7 @@ import { llmEnvFromArgs } from "./lib/llm-env.js";
 const PREVIEW_CHARS = 300;
 
 const USAGE =
-  "usage: npm run llm-smoke -- <file> [--provider ollama|anthropic|openai|mock] [--model <name>]";
+  "usage: npm run llm-smoke -- <file> [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt extract.v1|extract.v2]";
 
 function fail(message: string): never {
   console.error(message);
@@ -43,7 +43,11 @@ function section(title: string): void {
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { provider: { type: "string" }, model: { type: "string" } },
+    options: {
+      provider: { type: "string" },
+      model: { type: "string" },
+      prompt: { type: "string" },
+    },
   });
   const file = positionals[0];
   if (file === undefined || positionals.length > 1) fail(USAGE);
@@ -70,12 +74,13 @@ async function main(): Promise<void> {
   }
 
   const filename = file.split(/[\\/]/).pop() ?? file;
+  const prompt = extractPrompt(config.PROMPT_VERSION);
   const request: LlmRequest = {
-    system: buildSystemPrompt(),
+    system: prompt.system,
     messages: [
       { role: "user", content: buildUserMessage({ filename, text, chunkIndex: 0, chunkCount: 1 }) },
     ],
-    schema: llmExtractionJsonSchema(),
+    schema: prompt.schema,
     schemaName: SCHEMA_NAME,
     timeoutMs: config.LLM_TIMEOUT_MS,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -103,7 +108,11 @@ async function main(): Promise<void> {
     };
     section("ollama request body (document shortened, schema replaced)");
     const body = {
-      ...buildChatBody(provider.model, ollamaContextFloor(config.LLM_MAX_INPUT_CHARS), preview),
+      ...buildChatBody(
+        provider.model,
+        ollamaContextFloor(config.LLM_MAX_INPUT_CHARS, config.PROMPT_VERSION),
+        preview,
+      ),
       format: "<schema>",
     };
     console.log(JSON.stringify(body, null, 2));

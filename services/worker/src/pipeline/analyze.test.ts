@@ -390,6 +390,23 @@ describe("analyzeDocument", () => {
     ]);
   });
 
+  it("uses the prompt version from the config and stores it with the result", async () => {
+    const run = async (env: Record<string, string>) => {
+      const provider = new MockProvider();
+      const { deps } = makeDeps({ UPLOAD_DIR: dir, ...env });
+      const { meta } = await analyzeDocument(input("two-pages.pdf"), { ...deps, provider });
+      return { version: meta.promptVersion, system: provider.calls[0]?.system ?? "" };
+    };
+
+    const byDefault = await run({});
+    const v2 = await run({ PROMPT_VERSION: "extract.v2" });
+
+    expect(byDefault.version).toBe("extract.v1");
+    expect(byDefault.system).toContain("report clauses that create cost");
+    expect(v2.version).toBe("extract.v2");
+    expect(v2.system).toContain("report only clauses that create material cost");
+  });
+
   it("runs ollama one chunk at a time and says so once when the config asked for more", async () => {
     const { deps, lines } = makeDeps({
       UPLOAD_DIR: dir,

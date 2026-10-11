@@ -6,8 +6,13 @@ import { MockProvider } from "./mock.js";
 describe("ollamaContextFloor", () => {
   // Pinned so a prompt or schema change that moves the size shows up here.
   it("sizes one floor for extract.v1 and summary.v1", () => {
-    expect(ollamaContextFloor(24000)).toBe(14336);
-    expect(ollamaContextFloor(12000)).toBe(10240);
+    expect(ollamaContextFloor(24000, "extract.v1")).toBe(14336);
+    expect(ollamaContextFloor(12000, "extract.v1")).toBe(10240);
+  });
+
+  it("sizes the floor for the prompt version in use", () => {
+    expect(ollamaContextFloor(24000, "extract.v2")).toBe(14336);
+    expect(ollamaContextFloor(12000, "extract.v2")).toBe(10240);
   });
 });
 
