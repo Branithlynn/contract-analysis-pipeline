@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+data
+.env
+.git
+.claude
+docs/ai-logs
+evals/results
+coverage
+samples

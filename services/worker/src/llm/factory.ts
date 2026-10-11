@@ -38,6 +38,7 @@ export function createProvider(config: Config): LlmProvider {
         baseUrl: config.OLLAMA_URL,
         model: config.LLM_MODEL,
         numCtxFloor: ollamaContextFloor(config.LLM_MAX_INPUT_CHARS),
+        timeoutMs: config.LLM_TIMEOUT_MS,
       });
     case "anthropic":
       return createAnthropicProvider({

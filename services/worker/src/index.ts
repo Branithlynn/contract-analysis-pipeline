@@ -11,6 +11,7 @@ import {
 import type { WorkerDeps } from "./deps.js";
 import { concurrencyFor } from "./llm/concurrency.js";
 import { createProvider } from "./llm/factory.js";
+import { undiciVersions } from "./llm/ollama.js";
 import { handleFinalFailure, processJob } from "./pipeline/run.js";
 
 const config = loadConfig();
@@ -34,11 +35,17 @@ try {
     logger,
   );
 
+  // Longer than the slowest llm call, so a long job can't look stalled and run twice in parallel.
+  const lockDurationMs = config.LLM_TIMEOUT_MS + 60_000;
+  // close() lets active jobs finish, which can take as long as one llm call.
+  // docker compose stop_grace_period has to be longer than this (6m with the defaults), or SIGKILL
+  // arrives before active jobs finish.
+  const shutdownTimeoutMs = config.LLM_TIMEOUT_MS + 30_000;
+
   const worker = new Worker(QUEUE_NAME, (job) => processJob(job, deps), {
     connection: { url: config.REDIS_URL, maxRetriesPerRequest: null },
     concurrency,
-    // Longer than the slowest llm call, so a long job can't look stalled and run twice in parallel.
-    lockDuration: config.LLM_TIMEOUT_MS + 60_000,
+    lockDuration: lockDurationMs,
     // A job that crashes a worker twice is failed instead of taking down the next one too.
     maxStalledCount: 1,
   });
@@ -65,6 +72,11 @@ try {
       concurrency,
       provider: provider.name,
       model: provider.model,
+      // The three timeouts depend on each other, so a wrong setting should show up here at startup.
+      llmTimeoutMs: config.LLM_TIMEOUT_MS,
+      lockDurationMs,
+      shutdownTimeoutMs,
+      undici: undiciVersions(),
     },
     "worker started",
   );
@@ -72,12 +84,11 @@ try {
   const shutdown = createShutdown({
     logger,
     exit: (code) => process.exit(code),
-    // close() lets active jobs finish, which can take as long as one llm call.
-    // docker compose stop_grace_period has to be longer than this (6m with the defaults), or SIGKILL
-    // arrives before active jobs finish.
-    forceAfterMs: config.LLM_TIMEOUT_MS + 30_000,
+    forceAfterMs: shutdownTimeoutMs,
     steps: [
       ["worker", () => worker.close()],
+      // After the worker, so no call is still using the connection pool.
+      ["llm", async () => provider.close?.()],
       [
         "db",
         () => {

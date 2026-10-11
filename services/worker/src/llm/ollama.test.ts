@@ -1,14 +1,17 @@
+import { createServer } from "node:http";
 import { llmExtractionJsonSchema } from "@nexus/shared";
 import { describe, expect, it, vi } from "vitest";
 import { LlmError } from "./errors.js";
-import { computeNumCtx, contextFloor, createOllamaProvider } from "./ollama.js";
+import { computeNumCtx, contextFloor, createOllamaProvider, type OllamaOptions } from "./ollama.js";
 import * as extract from "./prompts/extract.v1.js";
 import * as summary from "./prompts/summary.v1.js";
 import type { LlmRequest } from "./types.js";
 
 const FLOOR = 14336;
 
-function numCtxOf(init: RequestInit): number {
+type FetchInit = Parameters<NonNullable<OllamaOptions["fetch"]>>[1];
+
+function numCtxOf(init: FetchInit): number {
   return (JSON.parse(String(init.body)) as { options: { num_ctx: number } }).options.num_ctx;
 }
 
@@ -33,12 +36,57 @@ function chatResponse(content: string, extra: Record<string, unknown> = {}): Res
   });
 }
 
-function setup(fetchImpl: (input: string, init: RequestInit) => Promise<Response>) {
+const encoder = new TextEncoder();
+
+function chunkLine(content: string, extra: Record<string, unknown> = {}): string {
+  const chunk = {
+    model: "qwen2.5:7b-instruct",
+    message: { role: "assistant", content },
+    done: false,
+    ...extra,
+  };
+  return JSON.stringify(chunk) + "\n";
+}
+
+const DONE = { done: true, done_reason: "stop", prompt_eval_count: 1200, eval_count: 80 };
+
+type StreamEnd = "close" | { error: unknown } | { hangUntilAbort: AbortSignal | null | undefined };
+
+// What ollama sends with stream: true. `pieces` are network packets, not lines, so a test can split
+// a line in the middle. `end` is what happens after the last piece.
+function streamResponse(pieces: (string | Uint8Array)[], end: StreamEnd = "close"): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const piece of pieces) {
+        controller.enqueue(typeof piece === "string" ? encoder.encode(piece) : piece);
+      }
+      if (end === "close") {
+        controller.close();
+      } else if ("error" in end) {
+        controller.error(end.error);
+      } else {
+        // Like fetch: an abort while the body is being read fails the read with the signal's reason.
+        const signal = end.hangUntilAbort;
+        signal?.addEventListener("abort", () => {
+          controller.error(signal.reason);
+        });
+      }
+    },
+  });
+  return new Response(body, { headers: { "content-type": "application/x-ndjson" } });
+}
+
+function undiciError(message: string, props: { name?: string; code?: string }): Error {
+  return Object.assign(new Error(message), props);
+}
+
+function setup(fetchImpl: (input: string, init: FetchInit) => Promise<Response>) {
   const fetchMock = vi.fn(fetchImpl);
   const provider = createOllamaProvider({
     baseUrl: "http://ollama:11434/",
     model: "qwen2.5:7b-instruct",
     numCtxFloor: FLOOR,
+    timeoutMs: 5000,
     fetch: fetchMock,
   });
   return { provider, fetchMock };
@@ -95,7 +143,7 @@ describe("createOllamaProvider", () => {
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.parse(String(init?.body))).toEqual({
       model: "qwen2.5:7b-instruct",
-      stream: false,
+      stream: true,
       format: request.schema,
       keep_alive: "10m",
       messages: [
@@ -191,13 +239,14 @@ describe("createOllamaProvider", () => {
       maxOutputTokens: extract.MAX_OUTPUT_TOKENS,
     };
     const floor = contextFloor(24000, [extraction, summaryCall]);
-    const fetchMock = vi.fn<(url: string, init: RequestInit) => Promise<Response>>(() =>
+    const fetchMock = vi.fn<(url: string, init: FetchInit) => Promise<Response>>(() =>
       Promise.resolve(chatResponse("{}")),
     );
     const provider = createOllamaProvider({
       baseUrl: "http://ollama:11434",
       model: "qwen2.5:7b-instruct",
       numCtxFloor: floor,
+      timeoutMs: 5000,
       fetch: fetchMock,
     });
     const short = { role: "user" as const, content: "short" };
@@ -370,5 +419,242 @@ describe("createOllamaProvider", () => {
     expect(err.kind).toBe("bad_output");
     expect(err.rawText).toBe('{"nope":true}');
     expect(err.usage).toBeUndefined();
+  });
+
+  describe("streaming", () => {
+    it("collects the content of all chunks and takes usage from the done chunk", async () => {
+      const { provider } = setup(() =>
+        Promise.resolve(
+          streamResponse([
+            chunkLine('{"term":'),
+            chunkLine('"12 '),
+            chunkLine('months"}'),
+            chunkLine("", DONE),
+          ]),
+        ),
+      );
+
+      const res = await provider.complete(request);
+
+      expect(res).toMatchObject({
+        json: { term: "12 months" },
+        rawText: '{"term":"12 months"}',
+        usage: { inputTokens: 1200, outputTokens: 80 },
+        model: "qwen2.5:7b-instruct",
+      });
+    });
+
+    it("puts lines back together when a packet ends mid-line or mid-character", async () => {
+      const bytes = encoder.encode(chunkLine('{"term":"12 Monate für"}') + chunkLine("", DONE));
+      // 30 lands inside the first line, and cutting after 0xc3 splits the two bytes of "ü".
+      const umlaut = bytes.indexOf(0xc3);
+      const { provider } = setup(() =>
+        Promise.resolve(
+          streamResponse([
+            bytes.slice(0, 30),
+            bytes.slice(30, umlaut + 1),
+            bytes.slice(umlaut + 1),
+          ]),
+        ),
+      );
+
+      const res = await provider.complete(request);
+
+      expect(res.json).toEqual({ term: "12 Monate für" });
+    });
+
+    it("flags a stream that ended with done_reason length as truncated, with its usage", async () => {
+      const { provider } = setup(() =>
+        Promise.resolve(
+          streamResponse([
+            chunkLine('{"term": '),
+            chunkLine('"12 mon'),
+            chunkLine("", { ...DONE, done_reason: "length", eval_count: 2048 }),
+          ]),
+        ),
+      );
+
+      const err = await expectLlmError(provider.complete(request));
+
+      expect(err.kind).toBe("bad_output");
+      expect(err.truncated).toBe(true);
+      expect(err.rawText).toBe('{"term": "12 mon');
+      expect(err.usage).toEqual({ inputTokens: 1200, outputTokens: 2048 });
+    });
+
+    it("maps complete output that isn't json to bad_output, not truncated", async () => {
+      const { provider } = setup(() =>
+        Promise.resolve(streamResponse([chunkLine("Sure! Here is"), chunkLine(" the json", DONE)])),
+      );
+
+      const err = await expectLlmError(provider.complete(request));
+
+      expect(err.kind).toBe("bad_output");
+      expect(err.truncated).toBe(false);
+      expect(err.rawText).toBe("Sure! Here is the json");
+    });
+
+    it("maps a stream that closes before the done chunk to unavailable, so it is retried not repaired", async () => {
+      const { provider } = setup(() =>
+        Promise.resolve(streamResponse([chunkLine('{"term":'), chunkLine('"12 ')])),
+      );
+
+      const err = await expectLlmError(provider.complete(request));
+
+      expect(err.kind).toBe("unavailable");
+      expect(err.retryable).toBe(true);
+      expect(err.message).toContain("before the answer was complete");
+      expect(err.rawText).toBeUndefined();
+    });
+
+    it("maps a connection that drops mid-stream to unavailable", async () => {
+      const cause = new TypeError("terminated", {
+        cause: undiciError("other side closed", { code: "UND_ERR_SOCKET" }),
+      });
+      const { provider } = setup(() =>
+        Promise.resolve(streamResponse([chunkLine('{"term":')], { error: cause })),
+      );
+
+      const err = await expectLlmError(provider.complete(request));
+
+      expect(err.kind).toBe("unavailable");
+      expect(err.cause).toBe(cause);
+    });
+
+    it("maps an error line in the stream to unavailable with ollama's text", async () => {
+      const { provider } = setup(() =>
+        Promise.resolve(
+          streamResponse([
+            chunkLine('{"term":'),
+            '{"error":"llama runner process has terminated"}\n',
+          ]),
+        ),
+      );
+
+      const err = await expectLlmError(provider.complete(request));
+
+      expect(err.kind).toBe("unavailable");
+      expect(err.message).toContain("llama runner process has terminated");
+    });
+
+    it("maps an abort while the stream is being read to timeout", async () => {
+      const { provider } = setup((_url, init) =>
+        Promise.resolve(streamResponse([chunkLine('{"term":')], { hangUntilAbort: init.signal })),
+      );
+
+      const err = await expectLlmError(provider.complete({ ...request, timeoutMs: 10 }));
+
+      expect(err.kind).toBe("timeout");
+      expect(err.message).toBe("Ollama did not answer within 10ms");
+    });
+
+    it.each([
+      ["its name", undiciError("Headers Timeout Error", { name: "HeadersTimeoutError" })],
+      ["its code", undiciError("Headers Timeout Error", { code: "UND_ERR_HEADERS_TIMEOUT" })],
+    ])("maps fetch failed caused by a headers timeout (by %s) to timeout", async (_by, root) => {
+      // The shape from the cpu-only run: TypeError("fetch failed") <- TypeError <- HeadersTimeoutError.
+      const cause = new TypeError("fetch failed", {
+        cause: new TypeError("fetch failed", { cause: root }),
+      });
+      const { provider } = setup(() => Promise.reject(cause));
+
+      const err = await expectLlmError(provider.complete(request));
+
+      expect(err.kind).toBe("timeout");
+      expect(err.retryable).toBe(true);
+      expect(err.message).toContain("Ollama did not respond within");
+      expect(err.message).toContain("did not start answering");
+      expect(err.message).not.toContain("Cannot reach");
+      expect(err.cause).toBe(cause);
+    });
+
+    it.each([
+      ["its name", undiciError("Body Timeout Error", { name: "BodyTimeoutError" })],
+      ["its code", undiciError("Body Timeout Error", { code: "UND_ERR_BODY_TIMEOUT" })],
+    ])("maps a stream ended by a body timeout (by %s) to timeout", async (_by, root) => {
+      const cause = new TypeError("terminated", { cause: root });
+      const { provider } = setup(() =>
+        Promise.resolve(streamResponse([chunkLine('{"term":')], { error: cause })),
+      );
+
+      const err = await expectLlmError(provider.complete(request));
+
+      expect(err.kind).toBe("timeout");
+      expect(err.message).toContain("stopped sending mid-answer");
+    });
+  });
+
+  // Real fetch and a real socket on loopback: the agent's limits can't be seen through a stubbed fetch.
+  describe("against a local server that is slow to send headers", () => {
+    const HEADER_DELAY_MS = 2000;
+
+    async function slowServer() {
+      const server = createServer((req, res) => {
+        req.resume();
+        const timer = setTimeout(() => {
+          res.writeHead(200, { "content-type": "application/x-ndjson" });
+          res.end(chunkLine('{"term":"12 months"}', DONE));
+        }, HEADER_DELAY_MS);
+        res.on("close", () => {
+          clearTimeout(timer);
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("no port");
+      return {
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        close: () =>
+          new Promise<void>((resolve) => {
+            server.closeAllConnections();
+            server.close(() => {
+              resolve();
+            });
+          }),
+      };
+    }
+
+    async function completeWith(agentTimeoutMs: number) {
+      const server = await slowServer();
+      const provider = createOllamaProvider({
+        baseUrl: server.baseUrl,
+        model: "qwen2.5:7b-instruct",
+        numCtxFloor: FLOOR,
+        timeoutMs: agentTimeoutMs,
+      });
+      try {
+        // The total limit is far away, so only the agent's header limit can end the call early.
+        return await provider.complete({ ...request, timeoutMs: 30_000 }).then(
+          (value) => ({ value, error: undefined }),
+          (error: unknown) => ({ value: undefined, error }),
+        );
+      } finally {
+        await provider.close?.();
+        await server.close();
+      }
+    }
+
+    it("times out with 'did not start answering' when the agent's header limit is shorter", async () => {
+      const started = performance.now();
+      const { error } = await completeWith(300);
+
+      expect(error).toBeInstanceOf(LlmError);
+      expect(error).toMatchObject({
+        kind: "timeout",
+        message: "Ollama did not respond within 300ms (it did not start answering)",
+      });
+      expect(performance.now() - started).toBeLessThan(HEADER_DELAY_MS);
+    });
+
+    it("succeeds when the agent's header limit is longer than the wait", async () => {
+      const { value, error } = await completeWith(10_000);
+
+      expect(error).toBeUndefined();
+      expect(value).toMatchObject({
+        json: { term: "12 months" },
+        usage: { inputTokens: 1200, outputTokens: 80 },
+      });
+      expect(value?.latencyMs).toBeGreaterThanOrEqual(HEADER_DELAY_MS - 100);
+    });
   });
 });

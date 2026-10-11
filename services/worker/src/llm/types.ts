@@ -33,4 +33,6 @@ export interface LlmProvider {
   name: LlmProviderName;
   model: string;
   complete(req: LlmRequest): Promise<LlmResponse>;
+  // For providers that hold connections open. Called once on worker shutdown.
+  close?(): Promise<void>;
 }

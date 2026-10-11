@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import fastifyMultipart from "@fastify/multipart";
 import { fastify } from "fastify";
 import type { ErrorBody } from "@nexus/shared";
@@ -6,6 +5,7 @@ import type { Config, Db, Logger } from "@nexus/shared/node";
 import { errorHandler } from "./errors.js";
 import { healthRoutes } from "./health.js";
 import type { JobQueue } from "./queue.js";
+import { requestIdFrom } from "./request-id.js";
 import { documentRoutes } from "./routes/documents.js";
 
 const MB = 1024 * 1024;
@@ -23,7 +23,7 @@ export interface ServerDeps {
 export async function buildServer({ db, queue, config, logger, clock }: ServerDeps) {
   const app = fastify({
     loggerInstance: logger,
-    genReqId: () => randomUUID(),
+    genReqId: (request) => requestIdFrom(request.headers["x-request-id"]),
     // Only json bodies hit this. Multipart streams past it and is capped by the limits below.
     bodyLimit: 1 * MB,
   });
