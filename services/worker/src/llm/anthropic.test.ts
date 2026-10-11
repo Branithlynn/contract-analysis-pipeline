@@ -192,6 +192,8 @@ describe("createAnthropicProvider", () => {
     expect(err.kind).toBe("bad_output");
     expect(err.rawText).toBe('{"term": "12 mon');
     expect(err.cause).toBeInstanceOf(SyntaxError);
+    expect(err.truncated).toBe(false);
+    expect(err.usage).toEqual({ inputTokens: 900, outputTokens: 40 });
   });
 
   it("says so when the output hit max_tokens", async () => {
@@ -203,6 +205,18 @@ describe("createAnthropicProvider", () => {
 
     expect(err.kind).toBe("bad_output");
     expect(err.message).toContain("4096");
+    expect(err.truncated).toBe(true);
+  });
+
+  it("marks a reply with no text block as truncated when thinking used up max_tokens", async () => {
+    const { provider } = setup(() =>
+      Promise.resolve(reply({ content: [], stop_reason: "max_tokens" })),
+    );
+
+    const err = await expectLlmError(provider.complete(request));
+
+    expect(err.kind).toBe("bad_output");
+    expect(err.truncated).toBe(true);
   });
 
   it("maps a reply with no text block to bad_output", async () => {
@@ -212,6 +226,8 @@ describe("createAnthropicProvider", () => {
 
     expect(err.kind).toBe("bad_output");
     expect(err.rawText).toBe("");
+    expect(err.truncated).toBe(false);
+    expect(err.usage).toEqual({ inputTokens: 900, outputTokens: 40 });
   });
 
   it.each<[string, () => Error, LlmErrorKind]>([

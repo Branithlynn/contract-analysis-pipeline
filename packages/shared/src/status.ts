@@ -23,6 +23,8 @@ export const ErrorCode = {
   EXTRACTION_INVALID: "EXTRACTION_INVALID",
   LLM_UNAVAILABLE: "LLM_UNAVAILABLE",
   LLM_AUTH: "LLM_AUTH",
+  // The worker process died or hung while holding the job, more often than bullmq allows.
+  WORKER_STOPPED: "WORKER_STOPPED",
   INTERNAL: "INTERNAL",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

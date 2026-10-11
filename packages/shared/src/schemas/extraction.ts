@@ -147,6 +147,20 @@ const VerifiedRiskClause = z.strictObject({
 export const AlertLevel = z.enum(["info", "warning", "critical"]);
 export type AlertLevel = z.infer<typeof AlertLevel>;
 
+// Review and the ui branch on the code, never on the message text.
+export const AlertCode = z.enum([
+  "notice_deadline_passed",
+  "notice_deadline_soon",
+  "notice_deadline_upcoming",
+  "expired",
+  "high_risk",
+  "low_grounding",
+  "no_notice_period",
+  "expiration_mismatch",
+  "renewal_term_unknown",
+]);
+export type AlertCode = z.infer<typeof AlertCode>;
+
 export const ExpirationSource = z.enum(["stated", "computed"]);
 export type ExpirationSource = z.infer<typeof ExpirationSource>;
 
@@ -158,8 +172,10 @@ const Derived = z.strictObject({
   notice_deadline: IsoDate.nullable(),
   // Negative once the deadline has passed.
   days_until_notice_deadline: z.int().nullable(),
-  alerts: z.array(z.strictObject({ level: AlertLevel, message: z.string() })),
+  alerts: z.array(z.strictObject({ level: AlertLevel, code: AlertCode, message: z.string() })),
 });
+export type Derived = z.infer<typeof Derived>;
+export type Alert = Derived["alerts"][number];
 
 export const ExtractedFieldName = LlmExtractionSchema.keyof().exclude(["risk_clauses", "summary"]);
 export type ExtractedFieldName = z.infer<typeof ExtractedFieldName>;

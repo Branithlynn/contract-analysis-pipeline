@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   PROMPT_VERSION,
+  EMPTY_REPLY_NOTE,
   SCHEMA_NAME,
+  TRUNCATED_NOTE,
   buildRepairConversation,
   buildRepairMessage,
+  buildRetryConversation,
   buildSystemPrompt,
   buildUserMessage,
 } from "./extract.v1.js";
@@ -116,6 +119,24 @@ describe("buildRepairMessage / buildRepairConversation", () => {
       { role: "user", content: doc },
       { role: "assistant", content: '{"vendor_name":' },
       { role: "user", content: buildRepairMessage(errors) },
+    ]);
+  });
+});
+
+describe("buildRetryConversation", () => {
+  it("pins the wording of both notes", () => {
+    expect(TRUNCATED_NOTE).toBe(
+      "Your previous reply was cut off at the length limit. Keep every quote to one sentence.",
+    );
+    expect(EMPTY_REPLY_NOTE).toBe("Your previous reply was empty. Reply with the JSON only.");
+  });
+
+  it("resends the document with the note and no assistant turn", () => {
+    const doc = buildUserMessage({ filename: "a.pdf", text: "x", chunkIndex: 0, chunkCount: 1 });
+
+    expect(buildRetryConversation(doc, TRUNCATED_NOTE)).toEqual([
+      { role: "user", content: doc },
+      { role: "user", content: TRUNCATED_NOTE },
     ]);
   });
 });

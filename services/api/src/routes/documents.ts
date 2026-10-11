@@ -11,11 +11,12 @@ import {
   type DocumentRow,
 } from "@nexus/shared/node";
 import { batchLimitError, HttpError } from "../errors.js";
-import { parseStoredResult, toDetail, todayUtc, toSummary } from "../services/dto.js";
+import { readContext, readStoredResult, toDetail, toSummary } from "../services/dto.js";
 import { toCsv } from "../services/csv.js";
 import { enqueueOrDefer } from "../services/enqueue.js";
 import { EXPORT_COLUMNS, exportCells } from "../services/export.js";
 import { storeUpload, type UploadDeps } from "../services/upload.js";
+import type { Config } from "@nexus/shared/node";
 
 const UTF8_BOM = "\uFEFF";
 
@@ -23,11 +24,13 @@ const ListQuery = z.object({ limit: z.coerce.number().int().min(1).max(200).defa
 const IdParams = z.object({ id: z.uuid() });
 
 export interface DocumentRouteDeps extends UploadDeps {
+  config: UploadDeps["config"] & Pick<Config, "GROUNDING_REVIEW_THRESHOLD">;
   clock: () => Date;
 }
 
 export const documentRoutes: FastifyPluginCallback<DocumentRouteDeps> = (app, deps, done) => {
   const { db, clock } = deps;
+  const context = () => readContext(clock(), deps.config.GROUNDING_REVIEW_THRESHOLD);
 
   app.post("/documents", async (request, reply) => {
     const body: UploadResponse = { accepted: [], rejected: [] };
@@ -51,22 +54,22 @@ export const documentRoutes: FastifyPluginCallback<DocumentRouteDeps> = (app, de
 
   app.get("/documents", (request) => {
     const { limit } = ListQuery.parse(request.query);
-    const today = todayUtc(clock());
+    const ctx = context();
     return listDocuments(db, { limit }).map((row) =>
-      toSummary(row, parseStoredResult(row.result_json, row.id, request.log), today),
+      toSummary(row, readStoredResult(row.result_json, row.id, request.log, ctx)),
     );
   });
 
   // Registered before /documents/:id, so export.csv is never read as an id.
   app.get("/documents/export.csv", (request, reply) => {
-    const today = todayUtc(clock());
+    const ctx = context();
     const rows = listCompletedForExport(db).map((row) =>
-      exportCells(row, parseStoredResult(row.result_json, row.id, request.log), today),
+      exportCells(row, readStoredResult(row.result_json, row.id, request.log, ctx)),
     );
     return (
       reply
         .header("content-type", "text/csv; charset=utf-8")
-        .header("content-disposition", `attachment; filename="contracts-${today}.csv"`)
+        .header("content-disposition", `attachment; filename="contracts-${ctx.today}.csv"`)
         // Excel reads a csv without a BOM in the local ANSI codepage and mangles non-ascii vendor names.
         .send(UTF8_BOM + toCsv(EXPORT_COLUMNS, rows))
     );
@@ -79,7 +82,7 @@ export const documentRoutes: FastifyPluginCallback<DocumentRouteDeps> = (app, de
     const extraction = row.latest_extraction_id
       ? getExtraction(db, row.latest_extraction_id)
       : undefined;
-    return toDetail(row, extraction, listEvents(db, id), request.log, todayUtc(clock()));
+    return toDetail(row, extraction, listEvents(db, id), request.log, context());
   });
 
   app.post("/documents/:id/retry", async (request, reply) => {
@@ -118,7 +121,7 @@ export const documentRoutes: FastifyPluginCallback<DocumentRouteDeps> = (app, de
     const updated = getDocument(db, id);
     if (!updated) throw new Error(`document ${id} vanished after retry`);
     // queued has no extraction worth showing yet; the old one comes back via the detail endpoint.
-    return reply.status(202).send(toSummary(updated, null, todayUtc(clock())));
+    return reply.status(202).send(toSummary(updated, null));
   });
 
   done();

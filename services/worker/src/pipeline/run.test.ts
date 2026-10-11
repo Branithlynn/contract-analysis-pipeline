@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UnrecoverableError } from "bullmq";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ErrorCode } from "@nexus/shared";
-import { getDocument, listEvents, transitionStatus } from "@nexus/shared/node";
+import { ErrorCode, ExtractionResultSchema } from "@nexus/shared";
+import { getDocument, getExtraction, listEvents, transitionStatus } from "@nexus/shared/node";
 import { docId, makeDeps as makeBaseDeps, seedDocument } from "../test-support/fixtures.js";
 import { makePdf } from "../test-support/pdf.js";
 import type * as analyzeModule from "./analyze.js";
 import { analyzeDocument } from "./analyze.js";
 import { PermanentError, TransientError } from "./errors.js";
-import { processJob, type ExtractJob } from "./run.js";
+import { handleFinalFailure, processJob, type ExtractJob, type FailedJob } from "./run.js";
 
 // Wraps the real analysis so the happy path parses real files, while failure tests can make it throw.
 vi.mock("./analyze.js", async (importOriginal) => {
@@ -78,7 +78,7 @@ describe("processJob", () => {
     expect(getDocument(deps.db, id)).toMatchObject({ status: "completed", attempts: 0 });
   });
 
-  it("parses a real 2 page pdf and completes it with needs_review", async () => {
+  it("analyzes a real 2 page pdf, stores the extraction and completes it", async () => {
     const { deps } = makeDeps();
     const id = seedDocument(deps);
 
@@ -93,7 +93,32 @@ describe("processJob", () => {
     });
     expect(listEvents(deps.db, id)).toEqual([
       expect.objectContaining({ stage: "parsing", outcome: "ok" }),
-      expect.objectContaining({ outcome: "info", message: "extraction not implemented yet" }),
+      expect.objectContaining({ stage: "extracting", outcome: "ok" }),
+      expect.objectContaining({ stage: "validating", outcome: "ok" }),
+      // The default mock finds nothing it can quote, so grounding is 0 and a person should look.
+      expect.objectContaining({
+        stage: "job",
+        outcome: "info",
+        message: "chunks=1 grounding=0.00 needs_review=true",
+      }),
+    ]);
+    const extractionId = getDocument(deps.db, id)?.latest_extraction_id ?? "";
+    const row = getExtraction(deps.db, extractionId);
+    expect(row).toMatchObject({
+      document_id: id,
+      run: 1,
+      provider: "mock",
+      model: "mock",
+      prompt_version: "extract.v1",
+      grounding_score: 0,
+      chunk_count: 1,
+      output_tokens: 100,
+    });
+    expect(row?.input_tokens).toBeGreaterThan(0);
+    const stored = ExtractionResultSchema.parse(JSON.parse(row?.result_json ?? "null"));
+    expect(stored.summary).toBe("Mock extraction.");
+    expect(stored.warnings).toEqual([
+      "review: only 0% of quotes were found, below the 80% threshold",
     ]);
   });
 
@@ -193,5 +218,88 @@ describe("processJob failures", () => {
     const { deps, id } = await failWith(new Error("boom"), 0, {});
 
     expect(getDocument(deps.db, id)?.status).toBe("failed");
+  });
+});
+
+describe("handleFinalFailure", () => {
+  const stalledError = new UnrecoverableError("job stalled more than allowable limit");
+
+  function failedJob(run: number): FailedJob {
+    return { id: "job-1", data: { documentId: docId(1), run }, finishedOn: Date.now() };
+  }
+
+  function processingDoc() {
+    const made = makeDeps();
+    const id = seedDocument(made.deps);
+    transitionStatus(made.deps.db, id, "processing", { from: "queued", bumpAttempts: true });
+    return { ...made, id };
+  }
+
+  it("fails a processing document whose job hit the stalled limit, with a code and an event", () => {
+    const { deps, id } = processingDoc();
+
+    expect(handleFinalFailure(failedJob(1), stalledError, deps)).toBe(true);
+
+    expect(getDocument(deps.db, id)).toMatchObject({
+      status: "failed",
+      stage: null,
+      error_code: ErrorCode.WORKER_STOPPED,
+      error_message: "worker stopped while processing this document twice",
+    });
+    expect(listEvents(deps.db, id)).toEqual([
+      expect.objectContaining({
+        stage: "job",
+        outcome: "error",
+        message: "WORKER_STOPPED: worker stopped while processing this document twice",
+      }),
+    ]);
+  });
+
+  it("fails a still-processing document with INTERNAL for any other final failure", () => {
+    const { deps, id } = processingDoc();
+
+    expect(handleFinalFailure(failedJob(1), new Error("lock lost"), deps)).toBe(true);
+
+    expect(getDocument(deps.db, id)).toMatchObject({
+      status: "failed",
+      error_code: ErrorCode.INTERNAL,
+      error_message: "job failed outside the pipeline: lock lost",
+    });
+  });
+
+  it("changes nothing for a stale run", () => {
+    const { deps, id } = processingDoc();
+    const before = getDocument(deps.db, id);
+
+    expect(handleFinalFailure(failedJob(2), stalledError, deps)).toBe(false);
+
+    expect(getDocument(deps.db, id)).toEqual(before);
+    expect(listEvents(deps.db, id)).toEqual([]);
+  });
+
+  it("changes nothing when processJob already marked the document failed", () => {
+    const { deps, id } = processingDoc();
+    transitionStatus(deps.db, id, "failed", {
+      from: "processing",
+      error_code: ErrorCode.NO_TEXT_LAYER,
+      error_message: "no text",
+    });
+    const before = getDocument(deps.db, id);
+
+    expect(handleFinalFailure(failedJob(1), stalledError, deps)).toBe(false);
+
+    expect(getDocument(deps.db, id)).toEqual(before);
+    expect(listEvents(deps.db, id)).toEqual([]);
+  });
+
+  it("changes nothing for a failure bullmq will retry, or with no job", () => {
+    const { deps, id } = processingDoc();
+
+    // finishedOn is only set on a final failure.
+    const willRetry: FailedJob = { id: "job-1", data: { documentId: docId(1), run: 1 } };
+    expect(handleFinalFailure(willRetry, new Error("timeout"), deps)).toBe(false);
+    expect(handleFinalFailure(undefined, stalledError, deps)).toBe(false);
+
+    expect(getDocument(deps.db, id)).toMatchObject({ status: "processing", error_code: null });
   });
 });

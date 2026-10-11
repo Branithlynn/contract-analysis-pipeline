@@ -188,19 +188,24 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
       }
 
       const { message, done_reason, prompt_eval_count, eval_count } = parsed.data;
+      const usage = { inputTokens: prompt_eval_count ?? 0, outputTokens: eval_count ?? 0 };
       const content = parseJson(message.content);
       if (!content.ok) {
-        const reason =
-          done_reason === "length"
-            ? `output stopped at num_predict (${req.maxOutputTokens} tokens) before the json was complete`
-            : "model output is not valid json";
-        throw new LlmError("bad_output", reason, message.content, { cause: content.error });
+        const truncated = done_reason === "length";
+        const reason = truncated
+          ? `output stopped at num_predict (${req.maxOutputTokens} tokens) before the json was complete`
+          : "model output is not valid json";
+        throw new LlmError("bad_output", reason, message.content, {
+          cause: content.error,
+          truncated,
+          usage,
+        });
       }
 
       return {
         json: content.value,
         rawText: message.content,
-        usage: { inputTokens: prompt_eval_count ?? 0, outputTokens: eval_count ?? 0 },
+        usage,
         model: parsed.data.model ?? model,
         latencyMs,
       };

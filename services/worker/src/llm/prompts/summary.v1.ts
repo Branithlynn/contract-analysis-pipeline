@@ -6,6 +6,9 @@ export const PROMPT_VERSION = "summary.v1";
 
 export const SCHEMA_NAME = "contract_summary";
 
+// About 80 words of json is ~150 tokens, the rest is headroom.
+export const MAX_OUTPUT_TOKENS = 512;
+
 export const LlmSummarySchema = z.object({
   summary: z.string().describe("Plain summary of the contract, about 80 words"),
 });

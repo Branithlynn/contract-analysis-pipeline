@@ -111,7 +111,7 @@ const validResult: ExtractionResult = {
     next_renewal_date: "2028-03-01",
     notice_deadline: "2027-12-01",
     days_until_notice_deadline: 417,
-    alerts: [{ level: "info", message: "Notice deadline is more than 90 days away." }],
+    alerts: [{ level: "warning", code: "high_risk", message: "1 high-severity risk clause(s)." }],
   },
   conflicts: [
     {

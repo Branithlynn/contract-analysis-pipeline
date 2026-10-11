@@ -1,7 +1,6 @@
 import type { ExtractionResult, Severity } from "@nexus/shared";
 import type { ExportRow } from "@nexus/shared/node";
 import type { Cell } from "./csv.js";
-import { daysUntil } from "./dto.js";
 
 export const EXPORT_COLUMNS = [
   "id",
@@ -35,12 +34,9 @@ function countSeverity(result: ExtractionResult, severity: Severity): number {
   return result.risk_clauses.filter((clause) => clause.severity === severity).length;
 }
 
-// result is null when the stored json was broken: the document columns still go out, the rest stays empty.
-export function exportCells(
-  row: ExportRow,
-  result: ExtractionResult | null,
-  today: string,
-): Cell[] {
+// result is null when the stored json was broken: the document columns still go out, the rest stays
+// empty. It is expected to have gone through withFreshDerived, so the date columns are today's.
+export function exportCells(row: ExportRow, result: ExtractionResult | null): Cell[] {
   const values: Record<ExportColumn, Cell> = {
     id: row.id,
     file: row.original_name,
@@ -53,7 +49,7 @@ export function exportCells(
     expiration_date: result?.derived.expiration_date ?? null,
     expiration_source: result?.derived.expiration_source ?? null,
     notice_deadline: result?.derived.notice_deadline ?? null,
-    days_until_notice_deadline: result ? daysUntil(result.derived.notice_deadline, today) : null,
+    days_until_notice_deadline: result?.derived.days_until_notice_deadline ?? null,
     auto_renewal: result?.auto_renewal.value ?? null,
     total_value: result?.total_contract_value.value?.amount ?? null,
     currency: result?.total_contract_value.value?.currency ?? null,

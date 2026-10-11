@@ -124,29 +124,38 @@ export function createAnthropicProvider(opts: AnthropicOptions): LlmProvider {
         .map((block) => (block.type === "text" ? block.text : ""))
         .join("");
 
+      const usage = { inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens };
+
       if (res.stop_reason === "refusal") {
         // Even parseable text isn't the extraction when the model refused.
         const category = res.stop_details?.category ?? "unspecified";
-        throw new LlmError("bad_output", `model refused (category: ${category})`, rawText);
+        throw new LlmError("bad_output", `model refused (category: ${category})`, rawText, {
+          usage,
+        });
       }
+      // Thinking tokens count against max_tokens too, so a cut-off reply can have no text block.
+      const truncated = res.stop_reason === "max_tokens";
       if (rawText === "") {
-        throw new LlmError("bad_output", "reply has no text block", rawText);
+        throw new LlmError("bad_output", "reply has no text block", rawText, { truncated, usage });
       }
 
       // rawText stays as the model wrote it, fence included, so the repair call shows its real reply.
       const parsed = parseJson(stripFence(rawText));
       if (!parsed.ok) {
-        const reason =
-          res.stop_reason === "max_tokens"
-            ? `output stopped at max_tokens (${req.maxOutputTokens}) before the json was complete`
-            : "model output is not valid json";
-        throw new LlmError("bad_output", reason, rawText, { cause: parsed.error });
+        const reason = truncated
+          ? `output stopped at max_tokens (${req.maxOutputTokens}) before the json was complete`
+          : "model output is not valid json";
+        throw new LlmError("bad_output", reason, rawText, {
+          cause: parsed.error,
+          truncated,
+          usage,
+        });
       }
 
       return {
         json: parsed.value,
         rawText,
-        usage: { inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens },
+        usage,
         model: res.model,
         latencyMs,
       };

@@ -9,8 +9,9 @@ import {
   QUEUE_NAME,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "./deps.js";
+import { concurrencyFor } from "./llm/concurrency.js";
 import { createProvider } from "./llm/factory.js";
-import { processJob } from "./pipeline/run.js";
+import { handleFinalFailure, processJob } from "./pipeline/run.js";
 
 const config = loadConfig();
 const logger = createLogger("worker", config.LOG_LEVEL);
@@ -26,10 +27,16 @@ try {
 
   const provider = createProvider(config);
   const deps: WorkerDeps = { db, config, logger, provider, clock: () => new Date() };
+  const concurrency = concurrencyFor(
+    provider,
+    config.WORKER_CONCURRENCY,
+    "WORKER_CONCURRENCY",
+    logger,
+  );
 
   const worker = new Worker(QUEUE_NAME, (job) => processJob(job, deps), {
     connection: { url: config.REDIS_URL, maxRetriesPerRequest: null },
-    concurrency: config.WORKER_CONCURRENCY,
+    concurrency,
     // Longer than the slowest llm call, so a long job can't look stalled and run twice in parallel.
     lockDuration: config.LLM_TIMEOUT_MS + 60_000,
     // A job that crashes a worker twice is failed instead of taking down the next one too.
@@ -41,6 +48,12 @@ try {
       { jobId: job?.id, documentId: documentIdOf(job?.data), attemptsMade: job?.attemptsMade, err },
       "job failed",
     );
+    try {
+      handleFinalFailure(job, err, deps);
+    } catch (handlerErr) {
+      // A throw inside an event listener would surface as an uncaught exception.
+      logger.error({ jobId: job?.id, err: handlerErr }, "could not mark the document failed");
+    }
   });
   // Without a listener bullmq prints connection errors to the console.
   worker.on("error", (err) => {
@@ -49,7 +62,7 @@ try {
   logger.info(
     {
       queue: QUEUE_NAME,
-      concurrency: config.WORKER_CONCURRENCY,
+      concurrency,
       provider: provider.name,
       model: provider.model,
     },

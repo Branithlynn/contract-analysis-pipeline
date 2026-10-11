@@ -20,6 +20,11 @@ describe("LlmError", () => {
     expect(new LlmError("auth", "401").rawText).toBeUndefined();
   });
 
+  it("is not truncated unless the provider says so", () => {
+    expect(new LlmError("bad_output", "not json", "{oops").truncated).toBe(false);
+    expect(new LlmError("bad_output", "cut off", "{oo", { truncated: true }).truncated).toBe(true);
+  });
+
   it.each<[LlmErrorKind, boolean]>([
     ["timeout", true],
     ["rate_limited", true],

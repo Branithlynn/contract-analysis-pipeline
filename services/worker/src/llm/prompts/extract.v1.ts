@@ -58,6 +58,21 @@ export function buildRepairMessage(errors: string): string {
   return `Your previous reply did not match the required schema. Problems:\n${errors}\nReply again with the complete corrected JSON only.`;
 }
 
+export const TRUNCATED_NOTE =
+  "Your previous reply was cut off at the length limit. Keep every quote to one sentence.";
+
+export const EMPTY_REPLY_NOTE = "Your previous reply was empty. Reply with the JSON only.";
+
+// No assistant turn here. A cut-off reply is up to maxOutputTokens of junk, and sending it back would
+// push ollama into a bigger num_ctx and a model reload for nothing the model can use. An empty reply
+// can't go back either: anthropic rejects an assistant turn with empty text.
+export function buildRetryConversation(userMessage: string, note: string): LlmMessage[] {
+  return [
+    { role: "user", content: userMessage },
+    { role: "user", content: note },
+  ];
+}
+
 // The model sees its own bad reply and the problems with it, instead of starting from scratch.
 export function buildRepairConversation(
   userMessage: string,

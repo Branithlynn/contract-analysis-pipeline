@@ -116,36 +116,45 @@ export function createOpenAIProvider(opts: OpenAIOptions): LlmProvider {
       const res = await send(req);
       const latencyMs = Math.round(performance.now() - started);
 
+      const usage = {
+        inputTokens: res.usage?.input_tokens ?? 0,
+        outputTokens: res.usage?.output_tokens ?? 0,
+      };
+
       const refusal = refusalOf(res);
       if (refusal !== undefined) {
-        throw new LlmError("bad_output", "model refused", refusal);
+        throw new LlmError("bad_output", "model refused", refusal, { usage });
       }
 
       const rawText = res.output_text;
       const reason = res.incomplete_details?.reason;
       if (reason === "content_filter") {
-        throw new LlmError("bad_output", "output stopped by the content filter", rawText);
+        throw new LlmError("bad_output", "output stopped by the content filter", rawText, {
+          usage,
+        });
       }
+      // Reasoning tokens count against the limit too, so a cut-off reply can have no text at all.
+      const truncated = reason === "max_output_tokens";
       if (rawText === "") {
-        throw new LlmError("bad_output", "reply has no output text", rawText);
+        throw new LlmError("bad_output", "reply has no output text", rawText, { truncated, usage });
       }
 
       const parsed = parseJson(rawText);
       if (!parsed.ok) {
-        const message =
-          reason === "max_output_tokens"
-            ? `output stopped at max_output_tokens (${req.maxOutputTokens}) before the json was complete`
-            : "model output is not valid json";
-        throw new LlmError("bad_output", message, rawText, { cause: parsed.error });
+        const message = truncated
+          ? `output stopped at max_output_tokens (${req.maxOutputTokens}) before the json was complete`
+          : "model output is not valid json";
+        throw new LlmError("bad_output", message, rawText, {
+          cause: parsed.error,
+          truncated,
+          usage,
+        });
       }
 
       return {
         json: parsed.value,
         rawText,
-        usage: {
-          inputTokens: res.usage?.input_tokens ?? 0,
-          outputTokens: res.usage?.output_tokens ?? 0,
-        },
+        usage,
         model: res.model,
         latencyMs,
       };

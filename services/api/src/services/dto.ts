@@ -1,6 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import { z } from "zod";
 import {
+  deriveDates,
   ExtractionResultSchema,
   type DocumentDetail,
   type DocumentEvent,
@@ -11,7 +12,17 @@ import {
 import type { DocumentRow, EventRow, ExtractionRow } from "@nexus/shared/node";
 
 const SEVERITY_RANK: Record<Severity, number> = { low: 1, medium: 2, high: 3 };
-const DAY_MS = 24 * 60 * 60 * 1000;
+
+// What a read needs to recompute the derived block: today's date from the injected clock (UTC) and
+// the grounding threshold behind the low_grounding alert.
+export interface ReadContext {
+  today: string;
+  groundingThreshold: number;
+}
+
+export function readContext(now: Date, groundingThreshold: number): ReadContext {
+  return { today: now.toISOString().slice(0, 10), groundingThreshold };
+}
 
 // json read from the db is a boundary too. A broken row logs and loses its extraction fields
 // instead of failing the whole list.
@@ -47,23 +58,33 @@ function maxSeverity(result: ExtractionResult): Severity | null {
   return max;
 }
 
-// The stored value was computed on the day of extraction and goes stale, so it is recomputed per read.
-// Both dates are calendar dates, compared in UTC.
-export function daysUntil(deadline: string | null, today: string): number | null {
-  if (deadline === null) return null;
-  return Math.round((Date.parse(deadline) - Date.parse(today)) / DAY_MS);
+// The stored derived block was right on the day of extraction. Days left, alerts and a rolled auto
+// renewal term go stale daily, so every read replaces it with one computed from the stored facts,
+// using the same deriveDates the worker stored it with.
+export function withFreshDerived(result: ExtractionResult, ctx: ReadContext): ExtractionResult {
+  const derived = deriveDates(
+    result,
+    result.risk_clauses,
+    result.grounding_score,
+    ctx.groundingThreshold,
+    ctx.today,
+  );
+  return { ...result, derived };
 }
 
-export function todayUtc(now: Date): string {
-  return now.toISOString().slice(0, 10);
+// Parse plus recompute, so no caller can forget the second half.
+export function readStoredResult(
+  json: string | null,
+  documentId: string,
+  log: FastifyBaseLogger,
+  ctx: ReadContext,
+): ExtractionResult | null {
+  const parsed = parseStoredResult(json, documentId, log);
+  return parsed && withFreshDerived(parsed, ctx);
 }
 
-export function toSummary(
-  row: DocumentRow,
-  result: ExtractionResult | null,
-  today: string,
-): DocumentSummary {
-  const noticeDeadline = result?.derived.notice_deadline ?? null;
+// Expects a result that already went through withFreshDerived.
+export function toSummary(row: DocumentRow, result: ExtractionResult | null): DocumentSummary {
   return {
     id: row.id,
     original_name: row.original_name,
@@ -78,8 +99,8 @@ export function toSummary(
     vendor_name: result?.vendor_name.value ?? null,
     total_contract_value: result?.total_contract_value.value ?? null,
     expiration_date: result?.derived.expiration_date ?? null,
-    notice_deadline: noticeDeadline,
-    days_until_notice_deadline: result ? daysUntil(noticeDeadline, today) : null,
+    notice_deadline: result?.derived.notice_deadline ?? null,
+    days_until_notice_deadline: result?.derived.days_until_notice_deadline ?? null,
     max_risk_severity: result ? maxSeverity(result) : null,
     risk_count: result ? result.risk_clauses.length : null,
     grounding_score: result?.grounding_score ?? null,
@@ -101,19 +122,11 @@ export function toDetail(
   extraction: ExtractionRow | undefined,
   events: EventRow[],
   log: FastifyBaseLogger,
-  today: string,
+  ctx: ReadContext,
 ): DocumentDetail {
-  const parsed = extraction ? parseStoredResult(extraction.result_json, row.id, log) : null;
-  // Same fresh value as the summary, so the detail view never shows two different day counts.
-  const result: ExtractionResult | null = parsed && {
-    ...parsed,
-    derived: {
-      ...parsed.derived,
-      days_until_notice_deadline: daysUntil(parsed.derived.notice_deadline, today),
-    },
-  };
+  const result = extraction ? readStoredResult(extraction.result_json, row.id, log, ctx) : null;
   return {
-    ...toSummary(row, result, today),
+    ...toSummary(row, result),
     mime: row.mime,
     size_bytes: row.size_bytes,
     attempts: row.attempts,

@@ -64,7 +64,7 @@ function complete(n: number, stored: unknown) {
   transitionStatus(db, id(n), "completed", { from: "processing" });
 }
 
-async function setup() {
+async function setup(now = NOW) {
   const lines: Record<string, unknown>[] = [];
   const stream = {
     write: (chunk: string) => lines.push(JSON.parse(chunk) as Record<string, unknown>),
@@ -74,7 +74,7 @@ async function setup() {
     queue,
     config: loadConfig({}),
     logger: createLogger("api", "info", stream),
-    clock: () => NOW,
+    clock: () => now,
   });
   return { app, lines };
 }
@@ -98,7 +98,7 @@ describe("GET /api/documents", () => {
       needs_review: false,
       vendor_name: "Acme Ltd",
       total_contract_value: { amount: 120000, currency: "USD" },
-      expiration_date: "2027-01-01",
+      expiration_date: "2026-07-11",
       notice_deadline: addDays(10),
       days_until_notice_deadline: 10,
       max_risk_severity: "high",
@@ -197,6 +197,51 @@ describe("GET /api/documents/:id", () => {
       events: [{ stage: "parsing", outcome: "ok", message: "parsed", duration_ms: 12 }],
     });
     expect(detail.extraction?.result.derived.days_until_notice_deadline).toBe(10);
+  });
+
+  it("recomputes the derived block from the facts, so a year later the term has rolled", async () => {
+    addDoc(1);
+    complete(1, result());
+    const today = await setup();
+    // A year and 24 days on: the 2026-07-11 term has renewed to 2027-07-11 and its deadline is gone.
+    const later = await setup(new Date("2027-06-25T08:00:00Z"));
+
+    const read = async (app: typeof today.app) => {
+      const res = await app.inject({ method: "GET", url: `/api/documents/${id(1)}` });
+      return DocumentDetailSchema.parse(res.json());
+    };
+    const now = await read(today.app);
+    const nextYear = await read(later.app);
+
+    expect(now.extraction?.result.derived).toMatchObject({
+      current_term_end: "2026-07-11",
+      next_renewal_date: "2026-07-12",
+      notice_deadline: "2026-06-11",
+      days_until_notice_deadline: 10,
+    });
+    expect(now.extraction?.result.derived.alerts.map((a) => a.code)).toEqual([
+      "notice_deadline_soon",
+      "high_risk",
+    ]);
+    expect(nextYear).toMatchObject({
+      notice_deadline: "2027-06-11",
+      days_until_notice_deadline: -14,
+    });
+    expect(nextYear.extraction?.result.derived).toMatchObject({
+      expiration_date: "2026-07-11",
+      current_term_end: "2027-07-11",
+      next_renewal_date: "2027-07-12",
+      notice_deadline: "2027-06-11",
+      days_until_notice_deadline: -14,
+    });
+    expect(nextYear.extraction?.result.derived.alerts).toEqual([
+      {
+        level: "critical",
+        code: "notice_deadline_passed",
+        message: "Notice deadline 2027-06-11 has passed. Contract renews on 2027-07-12.",
+      },
+      { level: "warning", code: "high_risk", message: "1 high-severity risk clause(s)." },
+    ]);
   });
 
   it("returns extraction null when the stored result is broken", async () => {

@@ -1,9 +1,11 @@
 import { UnrecoverableError, type Job } from "bullmq";
 import { z } from "zod";
+import { ErrorCode } from "@nexus/shared";
 import {
   ExtractJobPayload,
   getDocument,
   insertEvent,
+  insertExtraction,
   transitionStatus,
   type Logger,
 } from "@nexus/shared/node";
@@ -14,6 +16,12 @@ import { eventMessage, runStage, type StageContext } from "./stage.js";
 
 // Only what processJob reads, so tests can pass a plain object instead of a redis backed Job.
 export type ExtractJob = Pick<Job, "id" | "data" | "attemptsMade" | "opts">;
+
+// What bullmq hands the worker's failed listener. finishedOn is only set once the job has failed
+// for good; a failure that will be retried doesn't have it.
+export type FailedJob = Pick<Job, "id" | "data" | "finishedOn">;
+
+const STALLED_REASON = "job stalled more than allowable limit";
 
 // The worker writes status itself instead of the api listening to queue events: it knows the stage
 // and the error code, and the db stays the one source of truth.
@@ -64,27 +72,90 @@ export async function processJob(job: ExtractJob, deps: WorkerDeps): Promise<voi
     throw handleFailure(job, ctx, log, err);
   }
 
-  if (result.extraction === null) {
+  const { needsReview, meta } = result;
+  const groundingScore = result.result.grounding_score;
+  // One transaction: a completed document always has its extraction, and a document that left
+  // processing in the meantime (a retry bumped its run) doesn't get this run's result attached.
+  const completed = deps.db.transaction(() => {
+    const moved = transitionStatus(deps.db, documentId, "completed", {
+      from: "processing",
+      needs_review: needsReview,
+    });
+    if (!moved) return false;
+    insertExtraction(deps.db, {
+      document_id: documentId,
+      run,
+      provider: meta.provider,
+      model: meta.model,
+      prompt_version: meta.promptVersion,
+      result: result.result,
+      grounding_score: groundingScore,
+      chunk_count: meta.chunkCount,
+      input_tokens: meta.tokens.inputTokens,
+      output_tokens: meta.tokens.outputTokens,
+      duration_ms: meta.durationMs,
+    });
     insertEvent(deps.db, {
       document_id: documentId,
       run,
-      stage: "extracting",
+      stage: "job",
       outcome: "info",
-      message: "extraction not implemented yet",
+      message: `chunks=${String(meta.chunkCount)} grounding=${groundingScore === null ? "n/a" : groundingScore.toFixed(2)} needs_review=${String(needsReview)}`,
     });
-  }
-  const { needsReview } = result;
-
-  if (
-    !transitionStatus(deps.db, documentId, "completed", {
-      from: "processing",
-      needs_review: needsReview,
-    })
-  ) {
+    return true;
+  })();
+  if (!completed) {
     log.warn("document left processing before it could be completed");
     return;
   }
-  log.info({ needsReview }, "document completed");
+  log.info({ needsReview, groundingScore, ...meta }, "document completed");
+}
+
+// Covers the failures processJob never sees. When a worker dies twice while holding a job, bullmq
+// fails the job itself before calling the processor, so nothing marks the row and it would stay
+// "processing" forever: the reconciler only sweeps queued rows.
+// A no-op unless the row is still processing for this job's run, so it never overrides what
+// processJob wrote and never touches a document that has been retried since.
+// Returns true when it marked the document failed.
+export function handleFinalFailure(
+  job: FailedJob | undefined,
+  err: Error,
+  deps: Pick<WorkerDeps, "db" | "logger">,
+): boolean {
+  if (job?.finishedOn === undefined) return false;
+  const payload = ExtractJobPayload.safeParse(job.data);
+  if (!payload.success) return false;
+  const { documentId, run } = payload.data;
+
+  const stalled = err.message.includes(STALLED_REASON);
+  const code = stalled ? ErrorCode.WORKER_STOPPED : ErrorCode.INTERNAL;
+  const message = stalled
+    ? "worker stopped while processing this document twice"
+    : eventMessage(`job failed outside the pipeline: ${err.message}`);
+
+  // Status and run are checked in the same transaction as the write, like the success path.
+  const marked = deps.db.transaction(() => {
+    const doc = getDocument(deps.db, documentId);
+    if (doc?.status !== "processing" || doc.run !== run) return false;
+    const moved = transitionStatus(deps.db, documentId, "failed", {
+      from: "processing",
+      error_code: code,
+      error_message: message,
+    });
+    if (!moved) return false;
+    insertEvent(deps.db, {
+      document_id: documentId,
+      run,
+      stage: "job",
+      outcome: "error",
+      message: `${code}: ${message}`,
+    });
+    return true;
+  })();
+  if (marked) {
+    deps.logger.error({ documentId, run, jobId: job.id, code, err }, "document failed");
+  }
+  return marked;
 }
 
 // Returns what processJob should throw: UnrecoverableError stops bullmq retrying, anything else

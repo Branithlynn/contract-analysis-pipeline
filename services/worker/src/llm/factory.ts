@@ -14,8 +14,8 @@ function requireKey(key: string | undefined, name: string): string {
   return key;
 }
 
-// Every kind of call the worker makes to ollama, so they all share one num_ctx. The summary has no
-// output budget of its own yet; the extraction budget is the larger one either way.
+// Every kind of call the worker makes to ollama, so they all share one num_ctx. The extraction
+// budget is the larger one, so it decides the floor.
 export function ollamaContextFloor(maxInputChars: number): number {
   return contextFloor(maxInputChars, [
     {
@@ -26,7 +26,7 @@ export function ollamaContextFloor(maxInputChars: number): number {
     {
       system: summary.buildSystemPrompt(),
       schema: summary.summaryJsonSchema(),
-      maxOutputTokens: extract.MAX_OUTPUT_TOKENS,
+      maxOutputTokens: summary.MAX_OUTPUT_TOKENS,
     },
   ]);
 }

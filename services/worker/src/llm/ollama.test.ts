@@ -346,6 +346,8 @@ describe("createOllamaProvider", () => {
     expect(err.kind).toBe("bad_output");
     expect(err.rawText).toBe('{"term": "12 mon');
     expect(err.cause).toBeInstanceOf(SyntaxError);
+    expect(err.truncated).toBe(false);
+    expect(err.usage).toEqual({ inputTokens: 1200, outputTokens: 80 });
   });
 
   it("says so when the output hit num_predict, since that is the usual reason for cut-off json", async () => {
@@ -357,6 +359,7 @@ describe("createOllamaProvider", () => {
 
     expect(err.kind).toBe("bad_output");
     expect(err.message).toContain("2048");
+    expect(err.truncated).toBe(true);
   });
 
   it("maps a 200 with an unexpected envelope to bad_output", async () => {
@@ -366,5 +369,6 @@ describe("createOllamaProvider", () => {
 
     expect(err.kind).toBe("bad_output");
     expect(err.rawText).toBe('{"nope":true}');
+    expect(err.usage).toBeUndefined();
   });
 });

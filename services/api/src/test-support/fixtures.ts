@@ -51,8 +51,9 @@ export function extractionResult(overrides: Partial<ExtractionResult> = {}): Ext
     payment_terms: field("net 30"),
     governing_law: field("England"),
     liability_cap: field(null),
-    effective_date: field("2026-01-01"),
-    expiration_date: field("2027-01-01"),
+    // Term ends 2026-07-11, 30 days notice: the deadline is NOW + 10 days.
+    effective_date: field("2025-07-12"),
+    expiration_date: field("2026-07-11"),
     initial_term_months: field(12),
     renewal_term_months: field(12),
     termination_notice_days: field(30),
@@ -61,12 +62,12 @@ export function extractionResult(overrides: Partial<ExtractionResult> = {}): Ext
     risk_clauses: [clause("medium"), clause("high"), clause("low")],
     summary: "A contract.",
     derived: {
-      expiration_date: "2027-01-01",
+      expiration_date: "2026-07-11",
       expiration_source: "stated",
-      current_term_end: "2027-01-01",
-      next_renewal_date: "2027-01-01",
+      current_term_end: "2026-07-11",
+      next_renewal_date: "2026-07-12",
       notice_deadline: addDays(10),
-      // Deliberately stale, the api recomputes it.
+      // Deliberately stale, the api recomputes the whole block on read.
       days_until_notice_deadline: 999,
       alerts: [],
     },

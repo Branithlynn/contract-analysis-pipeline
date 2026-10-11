@@ -161,6 +161,8 @@ describe("createOpenAIProvider", () => {
     expect(err.kind).toBe("bad_output");
     expect(err.rawText).toBe('{"term": "12 mon');
     expect(err.cause).toBeInstanceOf(SyntaxError);
+    expect(err.truncated).toBe(false);
+    expect(err.usage).toEqual({ inputTokens: 900, outputTokens: 40 });
   });
 
   it("says so when the output hit max_output_tokens", async () => {
@@ -178,6 +180,7 @@ describe("createOpenAIProvider", () => {
 
     expect(err.kind).toBe("bad_output");
     expect(err.message).toContain("4096");
+    expect(err.truncated).toBe(true);
   });
 
   it("maps an empty output to bad_output", async () => {
@@ -187,6 +190,26 @@ describe("createOpenAIProvider", () => {
 
     expect(err.kind).toBe("bad_output");
     expect(err.rawText).toBe("");
+    expect(err.truncated).toBe(false);
+    expect(err.usage).toEqual({ inputTokens: 900, outputTokens: 40 });
+  });
+
+  it("marks an empty output as truncated when reasoning used up max_output_tokens", async () => {
+    const { provider } = setup(() =>
+      Promise.resolve(
+        reply({
+          output_text: "",
+          output: [],
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+        }),
+      ),
+    );
+
+    const err = await expectLlmError(provider.complete(request));
+
+    expect(err.kind).toBe("bad_output");
+    expect(err.truncated).toBe(true);
   });
 
   it.each<[string, () => Error, LlmErrorKind]>([
