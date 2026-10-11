@@ -180,6 +180,10 @@ export type Alert = Derived["alerts"][number];
 export const ExtractedFieldName = LlmExtractionSchema.keyof().exclude(["risk_clauses", "summary"]);
 export type ExtractedFieldName = z.infer<typeof ExtractedFieldName>;
 
+// Warnings that start with this are the reasons a document needs review. The worker writes it and the
+// web panel splits on it, so it is defined once here.
+export const REVIEW_PREFIX = "review: ";
+
 // Conflicting candidates are kept as the model returned them, so they use the loose value types.
 const Conflict = z.strictObject({
   field: ExtractedFieldName,

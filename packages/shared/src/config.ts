@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_MAX_FILES_PER_REQUEST, DEFAULT_MAX_UPLOAD_MB } from "./limits.js";
 
 export const LlmProviderName = z.enum(["ollama", "anthropic", "openai", "mock"]);
 export type LlmProviderName = z.infer<typeof LlmProviderName>;
@@ -15,8 +16,8 @@ const ConfigSchema = z
     DATABASE_PATH: z.string().default("./data/app.db"),
     UPLOAD_DIR: z.string().default("./data/uploads"),
     REDIS_URL: z.url().default("redis://localhost:6379"),
-    MAX_UPLOAD_MB: PositiveInt.default(20),
-    MAX_FILES_PER_REQUEST: PositiveInt.default(10),
+    MAX_UPLOAD_MB: PositiveInt.default(DEFAULT_MAX_UPLOAD_MB),
+    MAX_FILES_PER_REQUEST: PositiveInt.default(DEFAULT_MAX_FILES_PER_REQUEST),
     LLM_PROVIDER: LlmProviderName.default("ollama"),
     LLM_MODEL: z.string().default("qwen2.5:7b-instruct"),
     OLLAMA_URL: z.url().default("http://localhost:11434"),

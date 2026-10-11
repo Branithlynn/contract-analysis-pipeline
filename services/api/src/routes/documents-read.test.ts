@@ -4,6 +4,7 @@ import {
   createDocument,
   createLogger,
   insertEvent,
+  getExtraction,
   insertExtraction,
   loadConfig,
   migrate,
@@ -45,9 +46,9 @@ function addDoc(n: number, name = `doc-${n}.pdf`) {
   });
 }
 
-function complete(n: number, stored: unknown) {
+function complete(n: number, stored: unknown): string {
   transitionStatus(db, id(n), "processing", { from: "queued" });
-  insertExtraction(db, {
+  const extractionId = insertExtraction(db, {
     document_id: id(n),
     run: 1,
     provider: "mock",
@@ -62,6 +63,7 @@ function complete(n: number, stored: unknown) {
     duration_ms: 30,
   });
   transitionStatus(db, id(n), "completed", { from: "processing" });
+  return extractionId;
 }
 
 async function setup(now = NOW) {
@@ -172,7 +174,7 @@ describe("GET /api/documents/:id", () => {
       message: "parsed",
       duration_ms: 12,
     });
-    complete(1, result());
+    const extractionId = complete(1, result());
     const { app } = await setup();
 
     const res = await app.inject({ method: "GET", url: `/api/documents/${id(1)}` });
@@ -197,6 +199,10 @@ describe("GET /api/documents/:id", () => {
       events: [{ stage: "parsing", outcome: "ok", message: "parsed", duration_ms: 12 }],
     });
     expect(detail.extraction?.result.derived.days_until_notice_deadline).toBe(10);
+    // The time the extraction row was written, not the document's updated_at.
+    const stored = getExtraction(db, extractionId);
+    expect(stored).toBeDefined();
+    expect(detail.extraction?.created_at).toBe(stored?.created_at);
   });
 
   it("recomputes the derived block from the facts, so a year later the term has rolled", async () => {

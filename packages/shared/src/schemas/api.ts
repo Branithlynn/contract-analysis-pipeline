@@ -58,6 +58,8 @@ export const ExtractionRecordSchema = z.object({
   output_tokens: NonNegInt,
   duration_ms: NonNegInt,
   chunk_count: z.int().min(1),
+  // When the worker stored this result. For a duplicate it is the original's, since the result is reused.
+  created_at: Timestamp,
 });
 export type ExtractionRecord = z.infer<typeof ExtractionRecordSchema>;
 

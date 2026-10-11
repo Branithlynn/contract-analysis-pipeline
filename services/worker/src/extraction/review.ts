@@ -1,4 +1,4 @@
-import type { Alert, AlertCode } from "@nexus/shared";
+import { REVIEW_PREFIX, type Alert, type AlertCode } from "@nexus/shared";
 import type { GroundedExtraction } from "./grounding.js";
 import type { Conflict } from "./merge.js";
 
@@ -16,8 +16,6 @@ export interface ReviewDecision {
   // Already prefixed, they go straight into warnings and the ui picks them out by the prefix.
   reasons: string[];
 }
-
-export const REVIEW_PREFIX = "review: ";
 
 // The fields the dashboard and the renewal deadline are built on. A wrong value here costs money.
 const KEY_FIELDS = [

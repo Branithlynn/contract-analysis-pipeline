@@ -142,6 +142,7 @@ export function toDetail(
             output_tokens: extraction.output_tokens,
             duration_ms: extraction.duration_ms,
             chunk_count: extraction.chunk_count,
+            created_at: extraction.created_at,
           }
         : null,
     events: events.map(toEvent),

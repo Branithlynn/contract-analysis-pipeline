@@ -72,9 +72,13 @@ export async function storeUpload(
     // Looked up by the mime file-type detects from the bytes. The client's extension and content-type are ignored.
     const ext = detected ? MIME_FORMATS.get(detected.mime) : undefined;
     if (!detected || !ext) {
-      const what = detected?.mime ?? "unknown";
       logLine("unsupported_type", detected?.mime ?? null);
-      return reject(ErrorCode.UNSUPPORTED_TYPE, `Only PDF and DOCX are accepted, detected ${what}`);
+      return reject(
+        ErrorCode.UNSUPPORTED_TYPE,
+        detected
+          ? `The file content is ${detected.mime}, not a PDF or DOCX`
+          : "The file content is not a PDF or DOCX",
+      );
     }
 
     // The stored name is always the uuid, so nothing the client sends ends up in a path.

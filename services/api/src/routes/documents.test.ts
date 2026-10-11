@@ -207,12 +207,12 @@ describe("POST /api/documents", () => {
       {
         original_name: "fake.pdf",
         code: "UNSUPPORTED_TYPE",
-        message: "Only PDF and DOCX are accepted, detected unknown",
+        message: "The file content is not a PDF or DOCX",
       },
       {
         original_name: "archive.docx",
         code: "UNSUPPORTED_TYPE",
-        message: "Only PDF and DOCX are accepted, detected application/zip",
+        message: "The file content is application/zip, not a PDF or DOCX",
       },
     ]);
     expect(calls).toEqual([]);

@@ -1,0 +1,728 @@
+/* Colours are variables so dark mode is one block of overrides and no rule below names a colour itself. */
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --subtle: #f6f7f9;
+  --text: #1c1f24;
+  --muted: #5f6672;
+  --quote: #374151;
+  --border: #d0d5dd;
+  --border-soft: #eceef1;
+  --shadow: rgb(0 0 0 / 12%);
+
+  --accent: #1d4ed8;
+  --accent-bg: #e6eeff;
+  --ok: #17703a;
+  --ok-bg: #dff3e6;
+  --warn: #8a5200;
+  --warn-bg: #fdf0d5;
+  --error: #b42318;
+  --error-bg: #fde4e1;
+  --grey: #4b5563;
+  --grey-bg: #eef0f3;
+
+  --panel-width: 520px;
+  --page-pad-x: 24px;
+  --page-pad-y: 12px;
+  --gap: 24px;
+
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --surface: #1b1e24;
+    --subtle: #22262d;
+    --text: #e6e8eb;
+    --muted: #9aa3b0;
+    --quote: #c3c9d2;
+    --border: #3a404a;
+    --border-soft: #2a2f37;
+    --shadow: rgb(0 0 0 / 50%);
+
+    --accent: #8ab0ff;
+    --accent-bg: #1c2a4a;
+    --ok: #6fd093;
+    --ok-bg: #153524;
+    --warn: #f0b860;
+    --warn-bg: #3d2c0c;
+    --error: #ff8f85;
+    --error-bg: #43201c;
+    --grey: #c0c6cf;
+    --grey-bg: #2d323a;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* Keyboard focus only: a mouse click does not leave a ring behind. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--subtle);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Page */
+
+.app {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--page-pad-y) var(--page-pad-x);
+}
+
+.app-header h1 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.workspace {
+  margin-top: 14px;
+}
+
+/* The loading and error lines. A grid item's margins don't collapse, so their default margin would add
+   to the one above when the panel is open. */
+.workspace > p {
+  margin: 0;
+}
+
+.tone-ok {
+  color: var(--ok);
+}
+
+.tone-muted {
+  color: var(--muted);
+}
+
+.tone-warn {
+  color: var(--warn);
+}
+
+.tone-error {
+  color: var(--error);
+}
+
+/* Upload */
+
+.dropzone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 2px dashed var(--border);
+  border-radius: 6px;
+}
+
+.dropzone p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.dropzone-active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.upload-status p {
+  margin: 6px 0 0;
+}
+
+.upload-results {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.upload-results li {
+  padding: 1px 0;
+  overflow-wrap: anywhere;
+}
+
+.upload-name {
+  font-weight: 600;
+}
+
+/* Table */
+
+.documents-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.documents-empty {
+  padding: 32px 0;
+  text-align: center;
+  color: var(--muted);
+}
+
+.documents-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.documents-table th,
+.documents-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+/* File and Vendor are the only free text, so they are the columns that wrap when the panel takes room. */
+.documents-table td:nth-child(1),
+.documents-table td:nth-child(3) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Sticks to the page, which is the scroll container. The shadow stands in for the bottom border, which
+   a collapsed table does not keep on a sticky cell. */
+.documents-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  box-shadow: inset 0 -1px 0 var(--border);
+  border-bottom: 0;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.documents-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.documents-table tbody tr {
+  cursor: pointer;
+}
+
+.documents-table tbody tr:hover,
+.documents-table tbody tr:focus-within {
+  background: var(--subtle);
+}
+
+.documents-table tbody tr.row-selected {
+  background: var(--accent-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.documents-table td a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.documents-table td a:hover {
+  text-decoration: underline;
+}
+
+.sort-button {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: underline dotted;
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-grey,
+.severity-low {
+  background: var(--grey-bg);
+  color: var(--grey);
+}
+
+.badge-blue {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.badge-green {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.badge-amber,
+.severity-medium {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.badge-red,
+.severity-high {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot {
+    animation: none;
+  }
+}
+
+.notice-critical {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.notice-warning {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.notice-passed {
+  color: var(--muted);
+}
+
+/* Detail panel. Default (900px to 1359px): fixed on the right, over the table, because there is no room
+   for both. The two media queries at the end of the file change that for wide and narrow screens. */
+
+.detail-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: var(--panel-width);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px var(--shadow);
+  font-size: 14px;
+}
+
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-header h2 {
+  margin: 0;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.close-button {
+  padding: 2px 8px;
+  border-color: transparent;
+  background: none;
+  font-size: 16px;
+}
+
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 24px;
+}
+
+.detail-notice {
+  margin: 0;
+  padding: 12px 16px;
+}
+
+.detail-status {
+  display: flex;
+  align-items: center;
+}
+
+.detail-meta {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.detail-section {
+  margin-top: 20px;
+}
+
+.detail-section h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.detail-section p {
+  margin: 0;
+}
+
+.detail-section > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.detail-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+
+.box p,
+.box ul {
+  margin: 4px 0 0;
+}
+
+.box ul {
+  padding-left: 18px;
+}
+
+.box-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.box-error {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.plain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.alert {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border-left: 4px solid var(--border);
+  background: var(--subtle);
+}
+
+.alert-critical {
+  border-left-color: var(--error);
+  background: var(--error-bg);
+}
+
+.alert-warning {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.field-list {
+  margin: 0;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.field-row dt {
+  color: var(--muted);
+}
+
+.field-row dd {
+  margin: 0;
+}
+
+.field-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.field-check {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.pill {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.confidence-high {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.confidence-medium {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.confidence-low {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.quote blockquote {
+  margin: 6px 0 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--border);
+  color: var(--quote);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+
+.quote-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.risk-group h4 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+
+.risk {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.risk p {
+  margin: 4px 0 0;
+}
+
+.risk-title {
+  font-weight: 600;
+}
+
+.conflict {
+  margin-bottom: 8px;
+}
+
+.notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.timeline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.timeline li {
+  display: grid;
+  grid-template-columns: 124px 76px minmax(0, 1fr) 64px;
+  gap: 8px;
+  padding: 4px 0 4px 8px;
+  border-left: 3px solid var(--border);
+}
+
+.timeline li.timeline-ok {
+  border-left-color: var(--ok);
+}
+
+.timeline li.timeline-error {
+  border-left-color: var(--error);
+}
+
+.timeline li.timeline-retry {
+  border-left-color: var(--warn);
+}
+
+.timeline-when,
+.timeline-duration {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-duration {
+  text-align: right;
+}
+
+.timeline-stage {
+  font-weight: 600;
+}
+
+.timeline-message {
+  overflow-wrap: anywhere;
+}
+
+.raw-json {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 400px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--subtle);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+/* Wide: the panel is a second column, so the table shrinks instead of being covered and rows stay
+   clickable for comparing. :has() keeps this in css: the page only becomes a grid while a panel exists.
+   1360px leaves the table about 770px, which is the least the eight columns fit in. */
+@media (min-width: 1360px) {
+  .app:has(> .detail-panel) {
+    /* The 1400px cap is for the table column. The panel comes on top of it. */
+    max-width: calc(1400px + var(--gap) + var(--panel-width));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--panel-width);
+    /* The panel is a full screen tall and spans all three rows. Without a flexible last row the grid
+       shares that height out over the header and upload rows too, which opens gaps between them. */
+    grid-template-rows: auto auto 1fr;
+    column-gap: var(--gap);
+    align-items: start;
+  }
+
+  .app:has(> .detail-panel) > * {
+    grid-column: 1;
+  }
+
+  .app > .detail-panel {
+    grid-column: 2;
+    /* Header, upload and table are the three rows of the first column. */
+    grid-row: 1 / span 3;
+    position: sticky;
+    top: 0;
+    /* auto, so the negative right margin below widens it to the page edge instead of leaving a strip. */
+    width: auto;
+    height: 100vh;
+    /* Out to the top, right and bottom edges of the page, through the padding of .app. */
+    margin: calc(-1 * var(--page-pad-y)) calc(-1 * var(--page-pad-x)) calc(-1 * var(--page-pad-y)) 0;
+    box-shadow: none;
+  }
+}
+
+/* Narrow: no room for a table next to or under a 520px panel, so the panel is the whole screen. */
+@media (max-width: 899px) {
+  .detail-panel {
+    left: 0;
+    width: 100%;
+    border-left: 0;
+    box-shadow: none;
+  }
+
+  .field-row {
+    grid-template-columns: 100px minmax(0, 1fr);
+  }
+
+  .timeline li {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}

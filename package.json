@@ -19,7 +19,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "predev": "tsc -b",
-    "dev": "concurrently -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch services/api/dist/index.js\" \"node --watch services/worker/dist/index.js\" \"npm run dev -w @nexus/web\"",
+    "dev": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/index.js -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch-path=services/api/dist --watch-path=packages/shared/dist services/api/dist/index.js\" \"node --watch-path=services/worker/dist --watch-path=packages/shared/dist services/worker/dist/index.js\" \"npm run dev -w @nexus/web\"",
     "test-files": "tsx scripts/make-test-files.ts",
     "prellm-smoke": "tsc -b",
     "llm-smoke": "tsx scripts/llm-smoke.ts"
