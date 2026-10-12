@@ -267,6 +267,10 @@ describe("GET /api/documents/:id", () => {
       "high_risk",
     ]);
     expect(nextYear).toMatchObject({
+      // The summary carries both, so the list can show the term the contract is in today.
+      expiration_date: "2026-07-11",
+      current_term_end: "2027-07-11",
+      auto_renewal: true,
       notice_deadline: "2027-06-11",
       days_until_notice_deadline: -14,
     });

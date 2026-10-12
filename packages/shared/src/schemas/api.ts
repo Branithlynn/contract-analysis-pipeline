@@ -1,7 +1,13 @@
 import { z } from "zod";
 import { LlmProviderName, ModelSelectionSchema } from "../providers.js";
 import { DocumentStatus, ErrorCode, IndexStatus, Stage } from "../status.js";
-import { ExtractionResultSchema, Severity, StrictMoney } from "./extraction.js";
+import {
+  AlertCode,
+  AlertLevel,
+  ExtractionResultSchema,
+  Severity,
+  StrictMoney,
+} from "./extraction.js";
 
 // Response objects are not strict: the web client parses them, and an extra field from a newer api
 // should not break an older client.
@@ -43,10 +49,17 @@ export const DocumentSummarySchema = z.object({
   vendor_name: z.string().nullable(),
   total_contract_value: StrictMoney.nullable(),
   expiration_date: z.iso.date().nullable(),
+  // End of the term the contract is in today. Later than expiration_date once an auto-renewing
+  // contract has rolled over, so the list shows this one for contracts that renew.
+  current_term_end: z.iso.date().nullable(),
+  auto_renewal: z.boolean().nullable(),
   notice_deadline: z.iso.date().nullable(),
   days_until_notice_deadline: z.int().nullable(),
   max_risk_severity: Severity.nullable(),
   risk_count: NonNegInt.nullable(),
+  // What needs attention, as code and level only: the list shows them as small badges, the
+  // detail has the full message. Empty without an extraction.
+  alerts: z.array(z.object({ code: AlertCode, level: AlertLevel })),
   grounding_score: z.number().min(0).max(1).nullable(),
 });
 export type DocumentSummary = z.infer<typeof DocumentSummarySchema>;

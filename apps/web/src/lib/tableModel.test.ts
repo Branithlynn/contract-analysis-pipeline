@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DocumentSummary } from "@nexus/shared";
-import { countByStatus, sortDocuments } from "./tableModel.js";
+import { countByStatus, expiresLabel, sortDocuments } from "./tableModel.js";
 
 function doc(id: string, over: Partial<DocumentSummary> = {}): DocumentSummary {
   return {
@@ -23,10 +23,13 @@ function doc(id: string, over: Partial<DocumentSummary> = {}): DocumentSummary {
     vendor_name: null,
     total_contract_value: null,
     expiration_date: null,
+    current_term_end: null,
+    auto_renewal: null,
     notice_deadline: null,
     days_until_notice_deadline: null,
     max_risk_severity: null,
     risk_count: null,
+    alerts: [],
     grounding_score: null,
     ...over,
   };
@@ -116,5 +119,61 @@ describe("countByStatus", () => {
       failed: 0,
       needs_review: 0,
     });
+  });
+});
+
+describe("expiresLabel", () => {
+  const none = { expiration_date: null, current_term_end: null, auto_renewal: null, alerts: [] };
+
+  it("shows the current term end for a contract that renews by itself", () => {
+    // The first term ended in January 2026 and the contract rolled over.
+    expect(
+      expiresLabel({
+        ...none,
+        expiration_date: "2026-01-14",
+        current_term_end: "2027-01-14",
+        auto_renewal: true,
+      }),
+    ).toEqual({ date: "14 Jan 2027", note: "renews" });
+  });
+
+  it("keeps the expiration of a fixed-term contract", () => {
+    expect(
+      expiresLabel({
+        ...none,
+        expiration_date: "2028-03-31",
+        current_term_end: "2028-03-31",
+        auto_renewal: false,
+      }),
+    ).toEqual({ date: "31 Mar 2028", note: null });
+    // Auto renewal not stated counts as fixed term.
+    expect(expiresLabel({ ...none, expiration_date: "2028-03-31" })).toEqual({
+      date: "31 Mar 2028",
+      note: null,
+    });
+  });
+
+  it("marks a fixed-term contract the api reports as expired", () => {
+    expect(
+      expiresLabel({
+        ...none,
+        expiration_date: "2025-06-30",
+        current_term_end: "2025-06-30",
+        auto_renewal: false,
+        alerts: [{ code: "expired", level: "info" }],
+      }),
+    ).toEqual({ date: "30 Jun 2025", note: "expired" });
+  });
+
+  it("falls back to the expiration when a renewing contract has no current term end", () => {
+    expect(expiresLabel({ ...none, expiration_date: "2027-01-14", auto_renewal: true })).toEqual({
+      date: "14 Jan 2027",
+      note: null,
+    });
+  });
+
+  it("is null without a date", () => {
+    expect(expiresLabel(none)).toBeNull();
+    expect(expiresLabel({ ...none, auto_renewal: true })).toBeNull();
   });
 });

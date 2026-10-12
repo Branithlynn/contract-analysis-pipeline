@@ -184,3 +184,59 @@ const FIELD_LABELS: Record<ExtractedFieldName, string> = {
 export function fieldLabel(name: ExtractedFieldName): string {
   return FIELD_LABELS[name];
 }
+
+// "in 34 days", "today", "12 days ago". The number comes from the api, like formatDaysLeft.
+export function formatRelativeDays(days: number): string {
+  if (days === 0) return "today";
+  const count = plural(Math.abs(days), "day");
+  return days > 0 ? `in ${count}` : `${count} ago`;
+}
+
+// A date and how far away it is, as the table shows it: "15 Nov 2026 · in 34 days".
+export function formatDateWithDays(isoDate: string, days: number | null): string {
+  const date = formatDate(isoDate);
+  return days === null ? date : `${date} · ${formatRelativeDays(days)}`;
+}
+
+// A notice deadline closer than this is highlighted in the table: there is still time to act,
+// and not much of it.
+export const NOTICE_SOON_DAYS = 60;
+
+export function isNoticeSoon(days: number): boolean {
+  return days >= 0 && days < NOTICE_SOON_DAYS;
+}
+
+// How long something has been going on, for the processing chip: "42s", "1m 12s", "1h 03m".
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+// The error code in words, lower case, for use inside a sentence or a chip:
+// "run 2 with gpt-5-mini failed (api key rejected)".
+const ERROR_PHRASES: Record<ErrorCode, string> = {
+  UNSUPPORTED_TYPE: "unsupported file type",
+  FILE_TOO_LARGE: "file too large",
+  NO_TEXT_LAYER: "scanned pdf, no text to read",
+  EMPTY_DOCUMENT: "no text in the document",
+  TEXT_TOO_LONG: "document too long",
+  PARSE_ERROR: "file could not be read",
+  EXTRACTION_INVALID: "model output was not usable",
+  LLM_UNAVAILABLE: "model not reachable",
+  LLM_AUTH: "api key rejected",
+  WORKER_STOPPED: "processing was interrupted",
+  INTERNAL: "internal error",
+};
+
+export function errorPhrase(code: ErrorCode): string {
+  return ERROR_PHRASES[code];
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

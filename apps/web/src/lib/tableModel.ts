@@ -1,4 +1,5 @@
 import type { DocumentStatus, DocumentSummary, Severity } from "@nexus/shared";
+import { formatDate } from "./format.js";
 
 export type SortKey = "newest" | "notice" | "risk";
 
@@ -33,6 +34,30 @@ function byRisk(a: DocumentSummary, b: DocumentSummary): number {
   );
   if (severity !== 0) return severity;
   return nullsLast(a.risk_count, b.risk_count, (x, y) => y - x);
+}
+
+export interface ExpiresLabel {
+  date: string;
+  // What the date means, when it is not simply the day the contract ends.
+  note: "renews" | "expired" | null;
+}
+
+type ExpiresInput = Pick<
+  DocumentSummary,
+  "expiration_date" | "current_term_end" | "auto_renewal" | "alerts"
+>;
+
+// The Expires cell. A contract that renews by itself shows the end of the term it is in today:
+// the original expiration of one that already rolled over is in the past and reads as expired.
+// "expired" comes from the alert the api computed, not from the browser clock, so the table and
+// the csv export agree on what today is.
+export function expiresLabel(doc: ExpiresInput): ExpiresLabel | null {
+  if (doc.auto_renewal === true && doc.current_term_end !== null) {
+    return { date: formatDate(doc.current_term_end), note: "renews" };
+  }
+  if (doc.expiration_date === null) return null;
+  const expired = doc.alerts.some((alert) => alert.code === "expired");
+  return { date: formatDate(doc.expiration_date), note: expired ? "expired" : null };
 }
 
 export function sortDocuments(docs: readonly DocumentSummary[], key: SortKey): DocumentSummary[] {

@@ -139,10 +139,13 @@ export function toSummary(
     vendor_name: result?.vendor_name.value ?? null,
     total_contract_value: result?.total_contract_value.value ?? null,
     expiration_date: result?.derived.expiration_date ?? null,
+    current_term_end: result?.derived.current_term_end ?? null,
+    auto_renewal: result?.auto_renewal.value ?? null,
     notice_deadline: result?.derived.notice_deadline ?? null,
     days_until_notice_deadline: result?.derived.days_until_notice_deadline ?? null,
     max_risk_severity: result ? maxSeverity(result) : null,
     risk_count: result ? result.risk_clauses.length : null,
+    alerts: result ? result.derived.alerts.map(({ code, level }) => ({ code, level })) : [],
     grounding_score: result?.grounding_score ?? null,
   };
 }

@@ -2,9 +2,12 @@ import {
   DocumentDetailSchema,
   DocumentSummarySchema,
   ErrorBodySchema,
+  ModelsResponseSchema,
   UploadResponseSchema,
   type DocumentDetail,
   type DocumentSummary,
+  type ModelSelection,
+  type ModelsResponse,
   type UploadResponse,
 } from "@nexus/shared";
 
@@ -124,4 +127,82 @@ export function retryDocument(id: string): Promise<DocumentSummary> {
 
 export function exportCsvUrl(): string {
   return `${DOCUMENTS}/export.csv`;
+}
+
+const MODELS = "/api/models";
+
+// refresh asks the api to check ollama again instead of answering from its cache.
+export function getModels(refresh = false, signal?: AbortSignal): Promise<ModelsResponse> {
+  return request(
+    ModelsResponseSchema,
+    refresh ? `${MODELS}?refresh=1` : MODELS,
+    withSignal(signal),
+  );
+}
+
+// The detail with the values of one older run instead of the latest, for comparing two runs.
+export function getDocumentRun(
+  id: string,
+  run: number,
+  signal?: AbortSignal,
+): Promise<DocumentDetail> {
+  return request(
+    DocumentDetailSchema,
+    `${DOCUMENTS}/${encodeURIComponent(id)}?run=${String(run)}`,
+    withSignal(signal),
+  );
+}
+
+export function reanalyzeDocument(id: string, model: ModelSelection): Promise<DocumentSummary> {
+  return request(DocumentSummarySchema, `${DOCUMENTS}/${encodeURIComponent(id)}/reanalyze`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(model),
+  });
+}
+
+function uploadUrl(model: ModelSelection | null): string {
+  if (model === null) return DOCUMENTS;
+  const query = new URLSearchParams({ provider: model.provider, model: model.model });
+  return `${DOCUMENTS}?${query.toString()}`;
+}
+
+// One file per request, through XMLHttpRequest: fetch cannot report how much of a body has been
+// sent, and a progress bar per file needs exactly that. The answer is read like uploadDocuments
+// reads it: 202 and 400 both carry a result per file.
+export function uploadFile(
+  file: File,
+  model: ModelSelection | null,
+  onProgress: (fraction: number) => void,
+): Promise<UploadResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", uploadUrl(model));
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
+    };
+    xhr.onerror = () => reject(new ApiError(0, "NETWORK_ERROR", "Could not reach the server"));
+    xhr.onload = () => {
+      const body: unknown = xhr.response;
+      const result = UploadResponseSchema.safeParse(body);
+      if ((xhr.status === 202 || xhr.status === 400) && result.success) {
+        resolve(result.data);
+        return;
+      }
+      const error = ErrorBodySchema.safeParse(body);
+      reject(
+        error.success
+          ? new ApiError(xhr.status, error.data.error.code, error.data.error.message)
+          : new ApiError(
+              xhr.status,
+              `HTTP_${xhr.status}`,
+              xhr.statusText || `Request failed with status ${xhr.status}`,
+            ),
+      );
+    };
+    const form = new FormData();
+    form.append("files", file, file.name);
+    xhr.send(form);
+  });
 }

@@ -1,6 +1,14 @@
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { TERMINAL_STATUSES, type DocumentStatus } from "@nexus/shared";
-import { getDocument, getDocuments, retryDocument, uploadDocuments } from "./client.js";
+import { TERMINAL_STATUSES, type DocumentStatus, type ModelSelection } from "@nexus/shared";
+import {
+  getDocument,
+  getDocumentRun,
+  getDocuments,
+  getModels,
+  reanalyzeDocument,
+  retryDocument,
+  uploadDocuments,
+} from "./client.js";
 
 // The detail key starts with the list key, so invalidating the list also refreshes the open document.
 const DOCUMENTS_KEY = ["documents"] as const;
@@ -47,4 +55,52 @@ export function useRetry() {
     // Settled, not success: a 409 means the document changed under us, so the cached copy is stale.
     onSettled: () => queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY }),
   });
+}
+
+export const MODELS_KEY = ["models"] as const;
+
+// What can be picked right now. The api caches its ollama check for 30s, so asking more often
+// than that changes nothing. The refresh button goes around both caches, see refreshModels.
+export function useModels() {
+  return useQuery({
+    queryKey: MODELS_KEY,
+    queryFn: ({ signal }) => getModels(false, signal),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
+// For the refresh button: has the api check again, then replaces what the picker shows.
+export function useRefreshModels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => getModels(true),
+    onSuccess: (models) => queryClient.setQueryData(MODELS_KEY, models),
+  });
+}
+
+// One older run of a document, for the side by side comparison. A finished run never changes,
+// so it is fetched once.
+export function useDocumentRun(id: string, run: number | null) {
+  return useQuery({
+    queryKey: [...DOCUMENTS_KEY, id, "run", run],
+    queryFn: run === null ? skipToken : ({ signal }) => getDocumentRun(id, run, signal),
+    staleTime: Infinity,
+  });
+}
+
+export function useReanalyze() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, model }: { id: string; model: ModelSelection }) =>
+      reanalyzeDocument(id, model),
+    // Settled, not success: a 409 means the document changed under us, so the cached copy is stale.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY }),
+  });
+}
+
+// After files were uploaded one by one, outside a mutation.
+export function useInvalidateDocuments() {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY });
 }

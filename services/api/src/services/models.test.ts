@@ -337,6 +337,24 @@ describe("model catalog: ollama", () => {
     expect(tagCalls()).toBe(2);
   });
 
+  it("asks again right away when a refresh is requested", async () => {
+    const fetch = ollamaWith([{ name: "qwen2.5:7b-instruct" }], {
+      "qwen2.5:7b-instruct": ["completion"],
+    });
+    const models = catalog({}, fetch, () => 1_000_000);
+    const tagCalls = () => fetch.mock.calls.filter(([url]) => url.endsWith("/api/tags")).length;
+
+    await models.list();
+    await models.list();
+    expect(tagCalls()).toBe(1);
+
+    await models.list({ refresh: true });
+    expect(tagCalls()).toBe(2);
+    // And the fresh answer is cached like any other.
+    await models.list();
+    expect(tagCalls()).toBe(2);
+  });
+
   it("keeps a failure for only 5 seconds, so a started ollama shows up soon", async () => {
     let clock = 1_000_000;
     let up = false;

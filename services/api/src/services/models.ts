@@ -20,7 +20,8 @@ import {
 export type ModelCheck = { ok: true } | { ok: false; reason: string };
 
 export interface ModelCatalog {
-  list(): Promise<ModelsResponse>;
+  // refresh: ask ollama again instead of answering from the cache.
+  list(opts?: { refresh?: boolean }): Promise<ModelsResponse>;
   check(selection: ModelSelection): Promise<ModelCheck>;
   close(): Promise<void>;
 }
@@ -185,7 +186,10 @@ export function createModelCatalog(opts: ModelCatalogOptions): ModelCatalog {
   });
 
   return {
-    async list() {
+    async list(opts = {}) {
+      // The refresh button in the ui: someone just started ollama or pulled a model and does not
+      // want to wait for the cache to run out.
+      if (opts.refresh) cached = undefined;
       const providers = [await ollama(), hosted("openai"), hosted("anthropic")];
       // Not listed at all when it is off: a production ui should not even show it greyed out.
       if (config.ALLOW_MOCK) providers.push(mock());

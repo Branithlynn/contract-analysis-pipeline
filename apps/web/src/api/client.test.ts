@@ -32,10 +32,13 @@ const summary: DocumentSummary = {
   vendor_name: null,
   total_contract_value: null,
   expiration_date: null,
+  current_term_end: null,
+  auto_renewal: null,
   notice_deadline: null,
   days_until_notice_deadline: null,
   max_risk_severity: null,
   risk_count: null,
+  alerts: [],
   grounding_score: null,
 };
 
