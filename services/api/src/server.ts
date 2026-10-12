@@ -1,11 +1,16 @@
 import fastifyMultipart from "@fastify/multipart";
 import { fastify } from "fastify";
+import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import type { ErrorBody } from "@nexus/shared";
 import type { Config, Db, Embedder, Logger } from "@nexus/shared/node";
+import { createOllamaGate } from "./ask/busy.js";
+import { createChatModels, type ChatModels } from "./ask/chat-models.js";
+import { createThreadStore } from "./ask/threads.js";
 import { errorHandler } from "./errors.js";
 import { healthRoutes } from "./health.js";
 import type { JobQueue } from "./queue.js";
 import { requestIdFrom } from "./request-id.js";
+import { askRoutes } from "./routes/ask.js";
 import { documentRoutes } from "./routes/documents.js";
 import { modelRoutes } from "./routes/models.js";
 import { searchRoutes } from "./routes/search.js";
@@ -24,6 +29,11 @@ export interface ServerDeps {
   models: ModelCatalog;
   // Injected so tests can pin "today". Anything date dependent reads time through this.
   clock: () => Date;
+  // The memory of the chat threads. index.ts creates it at startup, right after the migrations.
+  // Left out, it is created here on the same database, which is what the tests do.
+  threads?: BaseCheckpointSaver;
+  // The chat models of the ask agent. Tests pass scripted ones.
+  chatModels?: ChatModels;
 }
 
 // Returns the app without listening so tests can drive it with inject().
@@ -35,6 +45,8 @@ export async function buildServer({
   embedder,
   models,
   clock,
+  threads = createThreadStore(db),
+  chatModels = createChatModels({ config }),
 }: ServerDeps) {
   const app = fastify({
     loggerInstance: logger,
@@ -65,6 +77,21 @@ export async function buildServer({
   await app.register(documentRoutes, { prefix: "/api", db, queue, config, models, clock });
   await app.register(modelRoutes, { prefix: "/api", models });
   await app.register(searchRoutes, { prefix: "/api", db, embedder });
+  await app.register(askRoutes, {
+    prefix: "/api",
+    db,
+    embedder,
+    config,
+    models,
+    clock,
+    threads,
+    chatModels,
+    ollamaGate: createOllamaGate({
+      activeLocalJobs: () => queue.activeLocalJobs(),
+      waitMs: config.ASK_BUSY_WAIT_MS,
+      logger,
+    }),
+  });
 
   return app;
 }

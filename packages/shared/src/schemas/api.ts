@@ -164,6 +164,8 @@ export const PageBreakSchema = z.object({
 
 // One retrieval chunk from GET /api/search.
 export const SearchHitSchema = z.object({
+  // What a chat answer cites the chunk by, as [chunk:<id>].
+  chunk_id: z.int(),
   document_id: z.string(),
   file_name: z.string(),
   // The pages the chunk's text is on. Both null for docx, which has no fixed pages.
@@ -180,6 +182,79 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 
 export const SearchResponseSchema = z.array(SearchHitSchema);
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
+
+// POST /api/ask. The model is the one picked in the ui, both parts or neither: without one the
+// LLM_PROVIDER / LLM_MODEL from the environment answer.
+export const AskRequestSchema = z
+  .object({
+    question: z.string().trim().min(1).max(2000),
+    // Continues a conversation. Left out on the first question, the answer carries a new one.
+    thread_id: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,64}$/)
+      .optional(),
+    provider: LlmProviderName.optional(),
+    model: z.string().trim().min(1).max(200).optional(),
+  })
+  .refine((body) => (body.provider === undefined) === (body.model === undefined), {
+    message: "provider and model have to be given together",
+  });
+export type AskRequest = z.infer<typeof AskRequestSchema>;
+
+// One tool call of the agent, for showing how an answer came about.
+export const AskStepSchema = z.object({
+  tool: z.string(),
+  input: z.record(z.string(), z.unknown()),
+  // One line about what came back, not the result itself.
+  result: z.string(),
+});
+export type AskStep = z.infer<typeof AskStepSchema>;
+
+// verified: the cited chunk or contract exists and every quote next to the citation is in it.
+// not_found: there is no such chunk or contract. quote_not_found: it exists, but the answer
+// quotes words that are not in it.
+export const CitationStatus = z.enum(["verified", "not_found", "quote_not_found"]);
+export type CitationStatus = z.infer<typeof CitationStatus>;
+
+// One [chunk:<id>] or [contract:<id>] in an answer, checked in code after the model wrote it.
+export const AskCitationSchema = z.object({
+  // As written in the answer, and where: the same source can be cited more than once.
+  marker: z.string(),
+  start: z.int().nonnegative(),
+  kind: z.enum(["chunk", "contract"]),
+  id: z.string(),
+  status: CitationStatus,
+  // Null when the source was not found.
+  document_id: z.string().nullable(),
+  file_name: z.string().nullable(),
+  // For a chunk: the page of the first quote found in it, or the chunk's pages without a quote.
+  // Null for a contract citation and for docx, which has no fixed pages.
+  page_start: z.int().nullable(),
+  page_end: z.int().nullable(),
+  // The quoted text in front of the citation.
+  quotes: z.array(
+    z.object({
+      text: z.string(),
+      found: z.boolean(),
+      page_start: z.int().nullable(),
+      page_end: z.int().nullable(),
+    }),
+  ),
+});
+export type AskCitation = z.infer<typeof AskCitationSchema>;
+
+export const AskResponseSchema = z.object({
+  thread_id: z.string(),
+  // The model that answered.
+  model: ModelSelectionSchema,
+  // step_limit: the model kept asking for tools until ASK_MAX_STEPS ran out. There is no answer
+  // then, only the steps it took, and the thread does not remember the question.
+  stopped: z.enum(["done", "step_limit"]),
+  answer: z.string().nullable(),
+  citations: z.array(AskCitationSchema),
+  steps: z.array(AskStepSchema),
+});
+export type AskResponse = z.infer<typeof AskResponseSchema>;
 
 // One provider in GET /api/models. Never carries a key or a part of one.
 export const ProviderAvailabilitySchema = z.object({

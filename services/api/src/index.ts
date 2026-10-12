@@ -10,6 +10,8 @@ import {
   migrate,
   openDb,
 } from "@nexus/shared/node";
+import { createChatModels } from "./ask/chat-models.js";
+import { createThreadStore, THREAD_TABLES } from "./ask/threads.js";
 import { BullMqJobQueue } from "./queue.js";
 import { startReconciler } from "./reconciler.js";
 import { buildServer } from "./server.js";
@@ -33,13 +35,29 @@ try {
     "database ready",
   );
 
+  // The chat threads live in the same file, in tables the checkpointer package creates itself.
+  // Here and nowhere else, so they exist before the first question and a failure stops the boot.
+  const threads = createThreadStore(db);
+  logger.info({ tables: THREAD_TABLES }, "thread store ready");
+
   mkdirSync(join(config.UPLOAD_DIR, "tmp"), { recursive: true });
 
   const queue = new BullMqJobQueue(config.REDIS_URL, config.JOB_ATTEMPTS, logger);
   const clock = () => new Date();
   const embedder = createEmbedder(config);
   const models = createModelCatalog({ config, logger });
-  const app = await buildServer({ db, queue, config, logger, embedder, models, clock });
+  const chatModels = createChatModels({ config });
+  const app = await buildServer({
+    db,
+    queue,
+    config,
+    logger,
+    embedder,
+    models,
+    clock,
+    threads,
+    chatModels,
+  });
   await app.listen({ host: "0.0.0.0", port: config.API_PORT });
 
   const reconciler = startReconciler({
@@ -61,6 +79,7 @@ try {
       // After http, so no search request is still waiting on it.
       ["embedder", async () => embedder.close?.()],
       ["models", () => models.close()],
+      ["chat models", () => chatModels.close()],
       ["db", () => db.close()],
     ],
   });

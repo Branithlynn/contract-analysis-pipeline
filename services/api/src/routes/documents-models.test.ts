@@ -71,6 +71,7 @@ async function setup(env: Record<string, string> = ENV) {
     },
     ping: () => Promise.resolve(),
     isReady: () => true,
+    activeLocalJobs: () => Promise.resolve(0),
     onReady: () => () => undefined,
     close: () => Promise.resolve(),
   };

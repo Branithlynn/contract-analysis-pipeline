@@ -17,9 +17,9 @@ import * as summary from "./prompts/summary.v1.js";
 import { createOpenAIProvider } from "./openai.js";
 import type { LlmProvider } from "./types.js";
 
-// Every kind of call the worker makes to ollama, so they all share one num_ctx. The extraction
-// budget is the larger one, so it decides the floor. Sized for the prompt version in use: a longer
-// system prompt or field guide needs its own room next to the document.
+// What the worker's largest ollama call needs: a full chunk with the extraction prompt, or the
+// summary. Sized for the prompt version in use: a longer system prompt or field guide needs its
+// own room next to the document.
 export function ollamaContextFloor(maxInputChars: number, version: ExtractPromptVersion): number {
   const extract = extractPrompt(version);
   return contextFloor(maxInputChars, [
@@ -34,6 +34,24 @@ export function ollamaContextFloor(maxInputChars: number, version: ExtractPrompt
       maxOutputTokens: summary.MAX_OUTPUT_TOKENS,
     },
   ]);
+}
+
+export interface OllamaContextCheck {
+  configured: number;
+  // What a full chunk needs with the current LLM_MAX_INPUT_CHARS and PROMPT_VERSION.
+  needed: number;
+  fits: boolean;
+}
+
+// OLLAMA_NUM_CTX is set by hand and the chunk size and the prompt can change under it. Too small
+// loses no text: a call that does not fit gets a bigger num_ctx for itself. But then every full
+// chunk is such a call, and each switch between sizes is a model reload. Checked at startup so
+// that shows up as one clear line instead of as slow jobs.
+export function checkOllamaContext(
+  config: Pick<Config, "OLLAMA_NUM_CTX" | "LLM_MAX_INPUT_CHARS" | "PROMPT_VERSION">,
+): OllamaContextCheck {
+  const needed = ollamaContextFloor(config.LLM_MAX_INPUT_CHARS, config.PROMPT_VERSION);
+  return { configured: config.OLLAMA_NUM_CTX, needed, fits: needed <= config.OLLAMA_NUM_CTX };
 }
 
 const KEY_NAMES = { openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY" } as const;
@@ -60,7 +78,8 @@ export function createProviderFor(config: Config, selection: ModelSelection): Ll
       return createOllamaProvider({
         baseUrl: config.OLLAMA_URL,
         model,
-        numCtxFloor: ollamaContextFloor(config.LLM_MAX_INPUT_CHARS, config.PROMPT_VERSION),
+        // The api's ask agent uses the same setting, so the two do not reload each other's model.
+        numCtxFloor: config.OLLAMA_NUM_CTX,
         timeoutMs: config.LLM_TIMEOUT_MS,
       });
     case "anthropic":

@@ -12,6 +12,7 @@ export const okQueue: JobQueue = {
   enqueue: () => Promise.resolve(),
   ping: () => Promise.resolve(),
   isReady: () => true,
+  activeLocalJobs: () => Promise.resolve(0),
   onReady: () => () => undefined,
   close: () => Promise.resolve(),
 };

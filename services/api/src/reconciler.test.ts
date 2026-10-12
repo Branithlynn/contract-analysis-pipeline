@@ -65,6 +65,7 @@ function fakeQueue(failFor: string[] = [], { ready = true } = {}) {
     },
     ping: () => Promise.resolve(),
     isReady: () => state.ready,
+    activeLocalJobs: () => Promise.resolve(0),
     onReady: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

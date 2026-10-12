@@ -55,6 +55,12 @@ const ConfigSchema = z
     // instead of making ollama swap the two on every document. -1 lets ollama decide.
     EMBED_OLLAMA_NUM_GPU: z.coerce.number().int().min(-1).default(0),
     OLLAMA_URL: z.url().default("http://localhost:11434"),
+    // The num_ctx of every chat call to ollama: the worker's extraction calls and the api's
+    // ask agent. One setting, because ollama reloads a model whenever num_ctx changes, and the
+    // two would otherwise push each other out on every switch. The default is what a full chunk
+    // needs with the default LLM_MAX_INPUT_CHARS. The worker warns at startup when a chunk
+    // needs more, and a single call that does not fit (a repair) still gets more for itself.
+    OLLAMA_NUM_CTX: PositiveInt.default(10240),
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
     // The hosted models a request may pick, comma separated. An allowlist, so a client cannot
@@ -68,11 +74,21 @@ const ConfigSchema = z
     // Per llm call. Hosted providers answer in seconds; this is for a full chunk on a local gpu.
     LLM_TIMEOUT_MS: PositiveInt.default(300000),
     // Sized so qwen2.5:7b mostly fits a 6 GB GPU (num_ctx 10240). Longer documents are chunked.
+    // Raising it means raising OLLAMA_NUM_CTX with it.
     LLM_MAX_INPUT_CHARS: PositiveInt.default(12000),
     LLM_CHUNK_CONCURRENCY: PositiveInt.default(1),
     WORKER_CONCURRENCY: PositiveInt.default(2),
     JOB_ATTEMPTS: PositiveInt.default(3),
     GROUNDING_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.8),
+    // POST /api/ask. One limit for the whole answer, every model call and tool call included.
+    // Sized for a local model: a hosted one is done in seconds.
+    ASK_TIMEOUT_MS: PositiveInt.default(180000),
+    // How many times the model may be called for one question. Each call either asks for tools
+    // or gives the answer, so 6 is at most 5 rounds of tools.
+    ASK_MAX_STEPS: PositiveInt.default(6),
+    // Ollama only: how long a question waits for the gpu while the worker is extracting, before
+    // it is answered with MODEL_BUSY.
+    ASK_BUSY_WAIT_MS: PositiveInt.default(5000),
   })
   .superRefine(
     (config, ctx) => {

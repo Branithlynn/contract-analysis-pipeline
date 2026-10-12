@@ -85,6 +85,7 @@ describe("GET /api/search", () => {
     const hits = SearchResponseSchema.parse(res.json());
     expect(hits).toHaveLength(2);
     expect(hits[0]).toEqual({
+      chunk_id: expect.any(Number) as number,
       document_id: msa,
       file_name: "msa.pdf",
       page_start: 3,

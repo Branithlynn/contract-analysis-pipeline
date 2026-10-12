@@ -62,6 +62,7 @@ async function setup({ failEnqueue = false } = {}) {
     },
     ping: () => Promise.resolve(),
     isReady: () => true,
+    activeLocalJobs: () => Promise.resolve(0),
     onReady: () => () => undefined,
     close: () => Promise.resolve(),
   };

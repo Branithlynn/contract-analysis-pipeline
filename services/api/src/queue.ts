@@ -21,6 +21,8 @@ export interface JobQueue {
   ping(): Promise<void>;
   // Synchronous connection check, so a caller can skip work instead of failing every enqueue.
   isReady(): boolean;
+  // Jobs the worker is running on the local (ollama) queue right now. Rejects when redis is down.
+  activeLocalJobs(): Promise<number>;
   // Fires each time the connection becomes ready, reconnects included. Returns an unsubscribe.
   onReady(listener: () => void): () => void;
   close(): Promise<void>;
@@ -80,6 +82,14 @@ export class BullMqJobQueue implements JobQueue {
 
   isReady(): boolean {
     return this.redis.status === "ready";
+  }
+
+  activeLocalJobs(): Promise<number> {
+    // Same reason as in enqueue: without this the call waits for a connection instead of failing.
+    if (!this.isReady()) {
+      return Promise.reject(new Error(`redis is not ready (status ${this.redis.status})`));
+    }
+    return this.queues.local.getActiveCount();
   }
 
   onReady(listener: () => void): () => void {

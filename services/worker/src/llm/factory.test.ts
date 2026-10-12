@@ -1,6 +1,6 @@
 import { loadConfig } from "@nexus/shared/node";
 import { describe, expect, it } from "vitest";
-import { createProvider, ollamaContextFloor } from "./factory.js";
+import { checkOllamaContext, createProvider, ollamaContextFloor } from "./factory.js";
 import { MockProvider } from "./mock.js";
 
 describe("ollamaContextFloor", () => {
@@ -16,7 +16,43 @@ describe("ollamaContextFloor", () => {
   });
 });
 
+describe("checkOllamaContext", () => {
+  it("fits with the defaults, so OLLAMA_NUM_CTX and LLM_MAX_INPUT_CHARS agree out of the box", () => {
+    expect(checkOllamaContext(loadConfig({}))).toEqual({
+      configured: 10240,
+      needed: 10240,
+      fits: true,
+    });
+  });
+
+  it("does not fit when the chunks were made bigger and OLLAMA_NUM_CTX was left alone", () => {
+    const config = loadConfig({ LLM_MAX_INPUT_CHARS: "24000" });
+
+    expect(checkOllamaContext(config)).toEqual({ configured: 10240, needed: 14336, fits: false });
+  });
+
+  it("fits when OLLAMA_NUM_CTX is larger than needed", () => {
+    const config = loadConfig({ OLLAMA_NUM_CTX: "16384" });
+
+    expect(checkOllamaContext(config)).toMatchObject({ needed: 10240, fits: true });
+  });
+});
+
 describe("createProvider", () => {
+  it("gives ollama OLLAMA_NUM_CTX as the num_ctx of a call that fits", () => {
+    const provider = createProvider(loadConfig({ OLLAMA_NUM_CTX: "12288" }));
+    const request = {
+      system: "s",
+      messages: [{ role: "user" as const, content: "short" }],
+      schema: {},
+      schemaName: "x",
+      timeoutMs: 1000,
+      maxOutputTokens: 512,
+    };
+
+    expect(provider.numCtx?.(request)).toBe(12288);
+  });
+
   it("defaults to ollama with LLM_MODEL", () => {
     const provider = createProvider(loadConfig({}));
 

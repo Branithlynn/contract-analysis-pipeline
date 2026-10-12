@@ -9,6 +9,7 @@ function fakeQueue(pingError?: Error): JobQueue {
     enqueue: () => Promise.resolve(),
     ping: () => (pingError ? Promise.reject(pingError) : Promise.resolve()),
     isReady: () => true,
+    activeLocalJobs: () => Promise.resolve(0),
     onReady: () => () => undefined,
     close: () => Promise.resolve(),
   };

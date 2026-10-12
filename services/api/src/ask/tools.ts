@@ -1,0 +1,385 @@
+import type { FastifyBaseLogger } from "fastify";
+import { tool } from "langchain";
+import { z } from "zod";
+import {
+  ExtractedFieldName,
+  RiskCategory,
+  type ExtractionResult,
+  type Severity,
+} from "@nexus/shared";
+import {
+  getDocument,
+  getExtraction,
+  hybridSearchRetrievalChunks,
+  keywordSearchRetrievalChunks,
+  listCompletedForExport,
+  LlmError,
+  type ChunkHit,
+  type Db,
+  type Embedder,
+} from "@nexus/shared/node";
+import { readStoredResult, type ReadContext } from "../services/dto.js";
+
+// The three things the agent can do. All of them only read, and all of them answer from what the
+// pipeline already stored: the extractions with their dates computed in code, and the search index.
+
+export interface AskToolDeps {
+  db: Db;
+  embedder: Embedder;
+  log: FastifyBaseLogger;
+  // Today and the grounding threshold, for the derived dates and alerts.
+  context: ReadContext;
+}
+
+// One short text, the same limit GET /api/search uses.
+const QUERY_EMBED_TIMEOUT_MS = 30_000;
+const MAX_CONTRACTS = 20;
+const DEFAULT_K = 4;
+const MAX_K = 6;
+// What the tools of one question may return in total, about 6k tokens. A local model has a small
+// context and ollama drops the start of a prompt that does not fit, without an error. A tool that
+// is called after the budget is used up says so instead of returning text.
+export const TOOL_RESULT_BUDGET_CHARS = 18_000;
+
+const SEVERITY_RANK: Record<Severity, number> = { low: 1, medium: 2, high: 3 };
+
+// Everything a tool returns is data from documents, so it goes to the model inside a <document>
+// block, which the system prompt declares untrusted. A closing tag in the data would end the
+// block early.
+export function wrapToolResult(payload: unknown): string {
+  const json = JSON.stringify(payload).replace(/<(\/?)document/gi, "<$1 document");
+  return `<document>\n${json}\n</document>`;
+}
+
+const Summarized = z.object({ summary: z.string() });
+
+// The one line the trace shows for a tool result.
+export function summaryOf(toolResult: string): string {
+  const json = toolResult.replace(/^<document>\n/, "").replace(/\n<\/document>$/, "");
+  try {
+    const parsed = Summarized.safeParse(JSON.parse(json));
+    if (parsed.success) return parsed.data.summary;
+  } catch {
+    // Not one of ours (the agent's own message for a tool call it could not run).
+  }
+  return toolResult.slice(0, 200);
+}
+
+const IsoDate = z.iso.date();
+
+// Loose on purpose: small local models send null or leave fields out for filters they don't use.
+const Filters = z.object({
+  auto_renewal: z.boolean().nullish().describe("true: only contracts that renew automatically"),
+  notice_deadline_before: IsoDate.nullish().describe(
+    "last day to give notice is on or before this date (YYYY-MM-DD)",
+  ),
+  notice_deadline_after: IsoDate.nullish().describe("on or after this date (YYYY-MM-DD)"),
+  expires_before: IsoDate.nullish().describe(
+    "the current term ends on or before this date (YYYY-MM-DD)",
+  ),
+  expires_after: IsoDate.nullish().describe("on or after this date (YYYY-MM-DD)"),
+  min_value: z.number().nullish().describe("total contract value at least this amount"),
+  max_value: z.number().nullish().describe("total contract value at most this amount"),
+  currency: z
+    .string()
+    .nullish()
+    .describe("ISO code like USD. Give it with min_value or max_value, amounts are not converted"),
+  governing_law: z.string().nullish().describe("part of the governing law, e.g. England"),
+  risk_category: RiskCategory.nullish().describe("has a risk clause of this category"),
+  needs_review: z.boolean().nullish().describe("true: only contracts flagged for human review"),
+});
+type Filters = z.infer<typeof Filters>;
+
+export interface ContractRow {
+  id: string;
+  file_name: string;
+  needs_review: boolean;
+  result: ExtractionResult;
+}
+
+// The end of the term the contract is in today, which is what "expires" means for one that renews.
+function termEnd(result: ExtractionResult): string | null {
+  return result.derived.current_term_end ?? result.derived.expiration_date;
+}
+
+// A filter on a value the contract does not have excludes it: "expires before June" should not
+// list contracts whose end date nobody found.
+function matches(row: ContractRow, f: Filters): boolean {
+  const { result } = row;
+  const between = (value: string | null, after?: string | null, before?: string | null) => {
+    if (after == null && before == null) return true;
+    if (value === null) return false;
+    return (after == null || value >= after) && (before == null || value <= before);
+  };
+  if (f.auto_renewal != null && result.auto_renewal.value !== f.auto_renewal) return false;
+  if (!between(result.derived.notice_deadline, f.notice_deadline_after, f.notice_deadline_before))
+    return false;
+  if (!between(termEnd(result), f.expires_after, f.expires_before)) return false;
+  if (f.min_value != null || f.max_value != null || f.currency != null) {
+    const money = result.total_contract_value.value;
+    if (money === null) return false;
+    if (f.currency != null && money.currency !== f.currency.trim().toUpperCase()) return false;
+    if (f.min_value != null && money.amount < f.min_value) return false;
+    if (f.max_value != null && money.amount > f.max_value) return false;
+  }
+  if (f.governing_law != null && f.governing_law.trim() !== "") {
+    const law = result.governing_law.value?.toLowerCase() ?? "";
+    if (!law.includes(f.governing_law.trim().toLowerCase())) return false;
+  }
+  if (f.risk_category != null && !result.risk_clauses.some((r) => r.category === f.risk_category))
+    return false;
+  if (f.needs_review != null && row.needs_review !== f.needs_review) return false;
+  return true;
+}
+
+function maxSeverity(result: ExtractionResult): Severity | null {
+  let max: Severity | null = null;
+  for (const clause of result.risk_clauses) {
+    if (max === null || SEVERITY_RANK[clause.severity] > SEVERITY_RANK[max]) max = clause.severity;
+  }
+  return max;
+}
+
+function keyFields(row: ContractRow) {
+  const { result } = row;
+  return {
+    id: row.id,
+    file_name: row.file_name,
+    document_type: result.document_type.value,
+    vendor_name: result.vendor_name.value,
+    total_contract_value: result.total_contract_value.value,
+    auto_renewal: result.auto_renewal.value,
+    expires: termEnd(result),
+    notice_deadline: result.derived.notice_deadline,
+    days_until_notice_deadline: result.derived.days_until_notice_deadline,
+    governing_law: result.governing_law.value,
+    risk_categories: [...new Set(result.risk_clauses.map((r) => r.category))],
+    max_risk_severity: maxSeverity(result),
+    needs_review: row.needs_review,
+  };
+}
+
+function contractDetail(row: ContractRow) {
+  const { result } = row;
+  const fields = Object.fromEntries(
+    ExtractedFieldName.options.map((name) => {
+      const field = result[name];
+      return [
+        name,
+        { value: field.value, confidence: field.confidence, quote_verified: field.quote_verified },
+      ];
+    }),
+  );
+  return {
+    id: row.id,
+    file_name: row.file_name,
+    needs_review: row.needs_review,
+    summary: result.summary,
+    fields,
+    risks: result.risk_clauses.map((r) => ({
+      category: r.category,
+      severity: r.severity,
+      title: r.title,
+      explanation: r.explanation,
+      quote: r.quote,
+      quote_verified: r.quote_verified,
+      page: r.quote_page,
+    })),
+    // Computed in code from the fields above, with today's date.
+    dates: {
+      expiration_date: result.derived.expiration_date,
+      current_term_end: result.derived.current_term_end,
+      next_renewal_date: result.derived.next_renewal_date,
+      notice_deadline: result.derived.notice_deadline,
+      days_until_notice_deadline: result.derived.days_until_notice_deadline,
+    },
+    alerts: result.derived.alerts,
+    // suspected_injections is left out on purpose: it is the text that must not reach a model.
+  };
+}
+
+function hitFields(hit: ChunkHit) {
+  return {
+    chunk_id: hit.chunk_id,
+    document_id: hit.document_id,
+    file_name: hit.file_name,
+    page_start: hit.page_start,
+    page_end: hit.page_end,
+    text: hit.text,
+  };
+}
+
+// One analyzed contract with its dates recomputed for today. Undefined when there is no such
+// document or it has no readable extraction.
+export function loadContract(
+  { db, log, context }: Pick<AskToolDeps, "db" | "log" | "context">,
+  id: string,
+): ContractRow | undefined {
+  const row = getDocument(db, id);
+  if (row?.status !== "completed" || row.latest_extraction_id === null) return undefined;
+  const extraction = getExtraction(db, row.latest_extraction_id);
+  const result = extraction && readStoredResult(extraction.result_json, row.id, log, context);
+  if (!result) return undefined;
+  return {
+    id: row.id,
+    file_name: row.original_name,
+    needs_review: row.needs_review === 1,
+    result,
+  };
+}
+
+export function createAskTools(deps: AskToolDeps) {
+  const { db, embedder, log, context } = deps;
+  let budgetLeft = TOOL_RESULT_BUDGET_CHARS;
+
+  function reply(payload: { summary: string } & Record<string, unknown>): string {
+    if (budgetLeft <= 0) {
+      return wrapToolResult({
+        summary: "not run, the tools have returned as much as fits",
+        error: "No more tool results fit. Answer from what you already have.",
+      });
+    }
+    const text = wrapToolResult(payload);
+    budgetLeft -= text.length;
+    return text;
+  }
+
+  // Completed documents with a readable extraction. A duplicate shares its original's values and
+  // would only list the same contract twice.
+  function contracts(): ContractRow[] {
+    const rows: ContractRow[] = [];
+    for (const row of listCompletedForExport(db)) {
+      if (row.duplicate_of !== null) continue;
+      const result = readStoredResult(row.result_json, row.id, log, context);
+      if (result === null) continue;
+      rows.push({
+        id: row.id,
+        file_name: row.original_name,
+        needs_review: row.needs_review === 1,
+        result,
+      });
+    }
+    return rows;
+  }
+
+  const findContracts = tool(
+    (filters) => {
+      const all = contracts();
+      const found = all.filter((row) => matches(row, filters));
+      return reply({
+        summary: `${String(found.length)} of ${String(all.length)} contracts match`,
+        total_matching: found.length,
+        // The model has to know when it is not looking at all of them.
+        shown: Math.min(found.length, MAX_CONTRACTS),
+        contracts: found.slice(0, MAX_CONTRACTS).map(keyFields),
+      });
+    },
+    {
+      name: "find_contracts",
+      description:
+        "List contracts by their extracted fields and dates. Use it for questions about which or " +
+        "how many contracts match a condition: renewal, notice deadlines, expiry, value, governing " +
+        "law, risk categories, review status. All filters are optional and combine with AND; no " +
+        "filters lists every contract. The dates are computed in code, do not recompute them. " +
+        "Cite a value from the result as [contract:<id>].",
+      schema: Filters,
+    },
+  );
+
+  const searchClauses = tool(
+    async ({ query, k, document_id }) => {
+      const limit = Math.min(Math.max(k ?? DEFAULT_K, 1), MAX_K);
+      const documentId = document_id == null || document_id === "" ? undefined : document_id;
+      if (documentId !== undefined && getDocument(db, documentId) === undefined) {
+        return reply({
+          summary: "no such contract",
+          error: `No contract has the id ${documentId}. Get ids from find_contracts.`,
+        });
+      }
+      let mode = "hybrid";
+      let hits: ChunkHit[];
+      try {
+        const [embedding] = await embedder.embed([query], "query", {
+          timeoutMs: QUERY_EMBED_TIMEOUT_MS,
+        });
+        if (embedding === undefined) throw new Error("embedder returned no vector for the query");
+        hits = hybridSearchRetrievalChunks(db, {
+          query,
+          embedding,
+          embedModel: embedder.model,
+          k: limit,
+          documentId,
+        });
+      } catch (err) {
+        if (!(err instanceof LlmError)) throw err;
+        // Half a search beats none: the words still find the clause when the embeddings
+        // provider is down or busy. The result says which search it was.
+        log.warn({ kind: err.kind, err }, "could not embed the query, searching by keyword only");
+        mode = "keyword";
+        hits = keywordSearchRetrievalChunks(db, { query, k: limit, documentId });
+      }
+      const files = [...new Set(hits.map((hit) => hit.file_name))];
+      return reply({
+        summary:
+          hits.length === 0
+            ? `no passages for "${query}"`
+            : `${String(hits.length)} passages for "${query}" from ${files.join(", ")}`,
+        mode,
+        results: hits.map(hitFields),
+      });
+    },
+    {
+      name: "search_clauses",
+      description:
+        "Search the text of the contracts and get the passages that match best. Use it for what a " +
+        "contract actually says. Do not pass the user's question as it is: rewrite it into the " +
+        "words a contract would use, e.g. 'most the vendor can be made to pay' becomes 'liability " +
+        "limited to fees', 'can they raise prices' becomes 'fees may be increased upon notice'. " +
+        "When the question is about one contract, pass its id as document_id (get it from " +
+        "find_contracts): a search over all contracts is dominated by the longest one and a short " +
+        "contract's clause may not show up. Cite a passage as [chunk:<chunk_id>], and put words " +
+        "copied from it in double quotes.",
+      schema: z.object({
+        query: z.string().min(1).max(500).describe("contract wording to look for"),
+        k: z
+          .number()
+          .int()
+          .nullish()
+          .describe(`how many passages, 1 to ${String(MAX_K)}, default ${String(DEFAULT_K)}`),
+        document_id: z.string().nullish().describe("only search this contract"),
+      }),
+    },
+  );
+
+  const getContract = tool(
+    ({ id }) => {
+      const row = loadContract(deps, id);
+      if (row === undefined) {
+        return reply({
+          summary: "no such contract",
+          error: `No analyzed contract has the id ${id}. Get ids from find_contracts.`,
+        });
+      }
+      return reply({
+        summary: `fields, ${String(row.result.risk_clauses.length)} risks and dates of ${row.file_name}`,
+        contract: contractDetail(row),
+      });
+    },
+    {
+      name: "get_contract",
+      description:
+        "Everything that was extracted from one contract: all fields with their confidence, the " +
+        "risk clauses with quotes, the dates computed from them (expiry, renewal, notice " +
+        "deadline) and the alerts. Cite a value from it as [contract:<id>].",
+      schema: z.object({ id: z.string().min(1).describe("contract id from find_contracts") }),
+    },
+  );
+
+  // A tuple, so a caller that takes one of them out gets that tool's own type.
+  const tools: [typeof findContracts, typeof searchClauses, typeof getContract] = [
+    findContracts,
+    searchClauses,
+    getContract,
+  ];
+  return tools;
+}

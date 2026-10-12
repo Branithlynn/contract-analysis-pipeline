@@ -5179,7 +5179,7 @@
          us/shared/node";
        4 import { createModelCatalog } from "./models.js";
        6 const OPENAI_KEY = "sk-test-openai-0123456789abcdef";
-       7 const ANTHROPIC_KEY = "sk-ant-test-0123456789abcdef";
+       7 const ANTHROPIC_KEY = "[REDACTED]";
        8 
        9 function json(body: unknown, status = 200): Response {
       10   return new Response(JSON.stringify(body), { status });
@@ -6327,7 +6327,7 @@
 
 ❯ the key check before commit (git diff | Select-String "sk-ant-", "sk-proj-",  
   "sk-[A-Za-z0-9]{20,}") now hits fake keys in tests:                           
-  "sk-ant-test-0123456789abcdef", "sk-ant-test", "sk-test". change every fake   
+  "[REDACTED]", "[REDACTED]", "sk-test". change every fake   
   key in tests and fixtures to placeholders that don't start with "sk-" (e.g.   
   "test-openai-key", "test-anthropic-key"). if a test needs a key-shaped string 
   to check that keys never leak into responses or logs, build it at runtime     

@@ -9,7 +9,7 @@ import {
   QUEUE_NAMES,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "./deps.js";
-import { createProviderRegistry } from "./llm/factory.js";
+import { checkOllamaContext, createProviderRegistry } from "./llm/factory.js";
 import { undiciVersions } from "./llm/ollama.js";
 import { createWorkers } from "./worker.js";
 
@@ -44,9 +44,23 @@ try {
       lockDurationMs: workers.local.opts.lockDuration,
       shutdownTimeoutMs,
       undici: undiciVersions(),
+      ollamaNumCtx: config.OLLAMA_NUM_CTX,
     },
     "worker started",
   );
+  // Whatever the default provider is: a single upload can pick an ollama model.
+  const context = checkOllamaContext(config);
+  if (!context.fits) {
+    logger.warn(
+      {
+        ollamaNumCtx: context.configured,
+        needed: context.needed,
+        llmMaxInputChars: config.LLM_MAX_INPUT_CHARS,
+        promptVersion: config.PROMPT_VERSION,
+      },
+      `OLLAMA_NUM_CTX is ${String(context.configured)} but a full chunk needs ${String(context.needed)}. Such calls get the bigger num_ctx and ollama reloads the model every time the size changes. Set OLLAMA_NUM_CTX=${String(context.needed)} or lower LLM_MAX_INPUT_CHARS.`,
+    );
+  }
 
   const shutdown = createShutdown({
     logger,

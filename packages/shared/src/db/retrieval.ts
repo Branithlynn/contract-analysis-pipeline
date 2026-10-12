@@ -90,6 +90,8 @@ export function listRetrievalChunks(db: Db, documentId: string): RetrievalChunkR
 }
 
 export interface ChunkHit {
+  // The id a chat answer cites the chunk by. It changes when the document is indexed again.
+  chunk_id: number;
   document_id: string;
   file_name: string;
   page_start: number | null;
@@ -130,9 +132,9 @@ type RankedHit = z.infer<typeof HitRow>;
 const HIT_COLUMNS = `c.id, c.document_id, d.original_name AS file_name,
               c.page_start, c.page_end, c.page_breaks, c.text`;
 
-// The row id is only for fusing the two rankings, it is not part of a result.
 function toHit(row: RankedHit): ChunkHit {
   return {
+    chunk_id: row.id,
     document_id: row.document_id,
     file_name: row.file_name,
     page_start: row.page_start,
@@ -149,6 +151,9 @@ export interface VectorSearchInput {
   // when they happen to have the same dimension.
   embedModel: string;
   k: number;
+  // Only this document. In a search over everything a long contract takes every place in the
+  // result and a short one that has the answer never shows up.
+  documentId?: string | undefined;
 }
 
 // A scan over every chunk of this model: vec_distance_cosine comes from sqlite-vec, the rest is
@@ -162,6 +167,7 @@ function vectorRanking(db: Db, input: VectorSearchInput): RankedHit[] {
        FROM retrieval_chunks c
        JOIN documents d ON d.id = c.document_id
        WHERE c.embed_model = @model AND c.embed_dim = @dim AND c.injection_flagged = 0
+         AND (@document IS NULL OR c.document_id = @document)
        ORDER BY score DESC, c.id
        LIMIT @k`,
     )
@@ -170,6 +176,7 @@ function vectorRanking(db: Db, input: VectorSearchInput): RankedHit[] {
       model: input.embedModel,
       dim: input.embedding.length,
       k: input.k,
+      document: input.documentId ?? null,
     });
   return z.array(HitRow).parse(rows);
 }
@@ -190,6 +197,7 @@ export function toFtsQuery(text: string): string | null {
 export interface KeywordSearchInput {
   query: string;
   k: number;
+  documentId?: string | undefined;
 }
 
 // Full text search over the same chunks, whatever model embedded them. bm25() is lower for a
@@ -205,10 +213,11 @@ function keywordRanking(db: Db, input: KeywordSearchInput): RankedHit[] {
        JOIN retrieval_chunks c ON c.id = retrieval_chunks_fts.rowid
        JOIN documents d ON d.id = c.document_id
        WHERE retrieval_chunks_fts MATCH @match AND c.injection_flagged = 0
+         AND (@document IS NULL OR c.document_id = @document)
        ORDER BY score DESC, c.id
        LIMIT @k`,
     )
-    .all({ match, k: input.k });
+    .all({ match, k: input.k, document: input.documentId ?? null });
   return z.array(HitRow).parse(rows);
 }
 
@@ -266,6 +275,20 @@ export function hybridSearchRetrievalChunks(db: Db, input: HybridSearchInput): C
     if (row) hits.push(toHit({ ...row, score }));
   }
   return hits;
+}
+
+// One chunk by the id a search returned it with, for checking a citation. A flagged chunk is not
+// found, the same as in the searches: no path hands its text out.
+export function getRetrievalChunk(db: Db, id: number): ChunkHit | undefined {
+  const row = db
+    .prepare<[number]>(
+      `SELECT ${HIT_COLUMNS}, 0 AS score
+       FROM retrieval_chunks c
+       JOIN documents d ON d.id = c.document_id
+       WHERE c.id = ? AND c.injection_flagged = 0`,
+    )
+    .get(id);
+  return row === undefined ? undefined : toHit(HitRow.parse(row));
 }
 
 const CountRow = z.object({ n: z.int() });
