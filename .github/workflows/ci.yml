@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379
+      # The mock keeps ci fast, free and deterministic. Model quality is measured with the eval
+      # harness against real providers, not here.
+      LLM_PROVIDER: mock
+      # With this set the e2e test fails instead of skipping when redis is not reachable.
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      # --ignore-scripts for the same reason as in the Dockerfile: better-sqlite3 13 ships its
+      # prebuilds in the tarball, but npm sees binding.gyp and would compile it with node-gyp.
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test -- --coverage
+      - run: npm run samples
+      - run: npm run test:e2e
+      # Exits 0 on low scores, which the mock has on purpose. Non-zero only when the run breaks.
+      - run: npm run eval -- --provider mock
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker compose build
