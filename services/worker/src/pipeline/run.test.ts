@@ -78,12 +78,37 @@ describe("processJob", () => {
     expect(getDocument(deps.db, id)).toMatchObject({ status: "completed", attempts: 0 });
   });
 
+  it("does nothing when it loses the claim: no analysis, no event, no extraction", async () => {
+    const { deps, lines } = makeDeps();
+    const id = seedDocument(deps);
+    transitionStatus(deps.db, id, "processing", { from: "queued", bumpAttempts: true });
+    transitionStatus(deps.db, id, "failed", {
+      from: "processing",
+      error_code: ErrorCode.PARSE_ERROR,
+      error_message: "broken pdf",
+    });
+    const before = getDocument(deps.db, id);
+    vi.mocked(analyzeDocument).mockClear();
+
+    await expect(processJob(job({ documentId: id, run: 1 }), deps)).resolves.toBeUndefined();
+
+    expect(analyzeDocument).not.toHaveBeenCalled();
+    expect(getDocument(deps.db, id)).toEqual(before);
+    expect(listEvents(deps.db, id)).toEqual([]);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM extractions").get()).toEqual({ n: 0 });
+    expect(lines.at(-1)).toMatchObject({ msg: "document already done, dropping job" });
+  });
+
   it("analyzes a real 2 page pdf, stores the extraction and completes it", async () => {
-    const { deps } = makeDeps();
+    const { deps, lines } = makeDeps();
     const id = seedDocument(deps);
 
     await processJob(job({ documentId: id, run: 1 }), deps);
 
+    // The raw reply is recorded per call for the evals, and must stay out of the worker's log.
+    const completedLine = lines.find((line) => line.msg === "document completed");
+    expect(completedLine?.calls).toEqual([expect.objectContaining({ kind: "extract", ok: true })]);
+    expect(JSON.stringify(completedLine)).not.toContain("rawText");
     expect(getDocument(deps.db, id)).toMatchObject({
       status: "completed",
       attempts: 1,
@@ -140,6 +165,26 @@ describe("processJob", () => {
         message: expect.stringMatching(/^NO_TEXT_LAYER: /) as unknown,
       }),
     ]);
+  });
+
+  it("logs the stack of a permanent failure once, on the error line", async () => {
+    const { deps, lines } = makeDeps();
+    const id = seedDocument(deps, { storage_path: "blank.pdf" });
+
+    await processJob(job({ documentId: id, run: 1 }), deps).catch((e: unknown) => e);
+
+    const problems = lines.filter((line) => (line.level as number) >= 40);
+    expect(problems.map((line) => [line.level, line.msg])).toEqual([
+      [40, "stage failed"],
+      [50, "document failed"],
+    ]);
+    expect(problems[0]).toMatchObject({ documentId: id, stage: "parsing", code: "NO_TEXT_LAYER" });
+    expect(problems[0]).not.toHaveProperty("err");
+    expect(problems[1]).toMatchObject({
+      documentId: id,
+      code: "NO_TEXT_LAYER",
+      err: { stack: expect.stringContaining("PermanentError") as unknown },
+    });
   });
 
   it("fails a missing upload file for good as PARSE_ERROR", async () => {
@@ -204,9 +249,16 @@ describe("processJob failures", () => {
 
   it("transient with attempts left: writes a retry event, rethrows and stays processing", async () => {
     const err = new Error("socket hang up");
-    const { deps, id, thrown } = await failWith(err, 0, { attempts: 3 });
+    const { deps, lines, id, thrown } = await failWith(err, 0, { attempts: 3 });
 
     expect(thrown).toBe(err);
+    expect(lines.find((line) => line.msg === "attempt failed, will retry")).toMatchObject({
+      level: 40,
+      err: {
+        message: "socket hang up",
+        stack: expect.stringContaining("socket hang up") as unknown,
+      },
+    });
     expect(getDocument(deps.db, id)).toMatchObject({ status: "processing", error_code: null });
     expect(listEvents(deps.db, id).at(-1)).toMatchObject({
       outcome: "retry",

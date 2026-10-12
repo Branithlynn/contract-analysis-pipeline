@@ -108,7 +108,9 @@ export async function processJob(job: ExtractJob, deps: WorkerDeps): Promise<voi
     log.warn("document left processing before it could be completed");
     return;
   }
-  log.info({ needsReview, groundingScore, ...meta }, "document completed");
+  // The raw replies are document content and can be long. They are for the eval json, not the log.
+  const calls = meta.calls.map((call) => ({ ...call, rawText: undefined }));
+  log.info({ needsReview, groundingScore, ...meta, calls }, "document completed");
 }
 
 // Covers the failures processJob never sees. When a worker dies twice while holding a job, bullmq
@@ -184,7 +186,8 @@ function handleFailure(job: ExtractJob, ctx: StageContext, log: Logger, err: unk
       `${classified.code}: ${classified.message}, retrying as attempt ${attempt + 1} of ${attempts}`,
     ),
   });
-  log.warn({ code: classified.code, attempt, attempts }, "attempt failed, will retry");
+  // The one line with the stack for an attempt that will be retried.
+  log.warn({ code: classified.code, attempt, attempts, err }, "attempt failed, will retry");
   return err;
 }
 

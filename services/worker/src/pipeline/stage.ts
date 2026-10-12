@@ -52,7 +52,8 @@ export async function runStage<T>(
       message: eventMessage(`${code}: ${message}`),
       duration_ms: durationMs,
     });
-    deps.logger.warn({ documentId, run, stage, durationMs, code, err }, "stage failed");
+    // No stack here: the job runner logs the error once, when it decides between retry and failed.
+    deps.logger.warn({ documentId, run, stage, durationMs, code }, "stage failed");
     throw err;
   }
 }

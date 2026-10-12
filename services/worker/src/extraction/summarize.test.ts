@@ -87,6 +87,8 @@ describe("summarizeExtraction", () => {
       durationMs: expect.any(Number) as number,
       usage: result.usage,
       numCtx: null,
+      // As the model wrote it: the stored summary is trimmed, this is not.
+      rawText: JSON.stringify({ summary: " Acme provides hosting for 12 months. " }),
     });
     expect(provider.calls).toEqual([
       {
@@ -113,7 +115,7 @@ describe("summarizeExtraction", () => {
       summary: "part one",
       usage: { inputTokens: 0, outputTokens: 0 },
       warnings: [SUMMARY_FALLBACK_WARNING],
-      call: { kind: "summary", ok: false },
+      call: { kind: "summary", ok: false, rawText: null },
     });
     expect(SUMMARY_FALLBACK_WARNING).toBe("summary: fell back to first chunk");
     expect(lines.some((l) => l.msg === "summary call failed")).toBe(true);

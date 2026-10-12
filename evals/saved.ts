@@ -12,6 +12,7 @@ const CallSchema = z.object({
   durationMs: z.number(),
   usage: z.object({ inputTokens: z.number(), outputTokens: z.number() }),
   numCtx: z.number().nullable(),
+  rawText: z.string().nullable().optional(),
 });
 
 const HeaderSchema: z.ZodType<ReportHeader> = z.object({

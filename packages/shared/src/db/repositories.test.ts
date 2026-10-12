@@ -312,6 +312,22 @@ describe("extractions", () => {
     expect(() => insertExtraction(db, extraction("missing"))).toThrow(/FOREIGN KEY/);
     expect(db.prepare("SELECT COUNT(*) AS n FROM extractions").get()).toEqual({ n: 0 });
   });
+
+  it("keeps neither the row nor the pointer when pointing the document at it fails", () => {
+    createDocument(db, doc("a"));
+    const first = insertExtraction(db, extraction("a", 1));
+    // The foreign key test above fails on the insert itself. This fails the second statement, after
+    // the insert went through, which is the case the transaction exists for.
+    db.exec(
+      `CREATE TRIGGER fail_pointer BEFORE UPDATE OF latest_extraction_id ON documents
+       BEGIN SELECT RAISE(ABORT, 'pointer update failed'); END`,
+    );
+
+    expect(() => insertExtraction(db, extraction("a", 2))).toThrow(/pointer update failed/);
+
+    expect(db.prepare("SELECT run FROM extractions").all()).toEqual([{ run: 1 }]);
+    expect(getDocument(db, "a")?.latest_extraction_id).toBe(first);
+  });
 });
 
 describe("events", () => {

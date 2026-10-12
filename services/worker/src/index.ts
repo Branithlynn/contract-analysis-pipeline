@@ -51,8 +51,14 @@ try {
   });
 
   worker.on("failed", (job, err) => {
-    logger.warn(
-      { jobId: job?.id, documentId: documentIdOf(job?.data), attemptsMade: job?.attemptsMade, err },
+    // Debug: processJob and handleFinalFailure already log every failure with its stack.
+    logger.debug(
+      {
+        jobId: job?.id,
+        documentId: documentIdOf(job?.data),
+        attemptsMade: job?.attemptsMade,
+        reason: err.message,
+      },
       "job failed",
     );
     try {

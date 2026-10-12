@@ -69,6 +69,7 @@ describe("extractChunk", () => {
         durationMs: expect.any(Number) as number,
         usage: result.usage,
         numCtx: null,
+        rawText: JSON.stringify(MOCK_EXTRACTION),
       },
     ]);
     expect(provider.calls).toEqual([
@@ -133,6 +134,9 @@ describe("extractChunk", () => {
       category: "auto_renewal",
       severity: "high",
     });
+    // The recorded reply is the model's, not our lowercased copy.
+    expect(result.calls[0]?.rawText).toContain('"severity":"High"');
+    expect(result.calls[0]?.rawText).toContain('"confidence":"MEDIUM"');
   });
 
   it("repairs a schema failure once with its own reply and the zod errors, summing usage", async () => {
@@ -158,6 +162,11 @@ describe("extractChunk", () => {
       ["repair", true],
     ]);
     expect(result.calls[0]?.usage.outputTokens).toBe(100);
+    // Each call keeps its own reply, the rejected one included.
+    expect(result.calls.map((call) => call.rawText)).toEqual([
+      JSON.stringify(broken()),
+      JSON.stringify(ok()),
+    ]);
   });
 
   it("records the num_ctx of each call when the provider has one", async () => {
@@ -208,6 +217,20 @@ describe("extractChunk", () => {
     expect(provider.calls[1]?.messages).toEqual(
       buildRepairConversation(doc, '{"vendor_name": oops', "Reply was not valid JSON"),
     );
+    expect(result.calls[0]).toMatchObject({ ok: false, rawText: '{"vendor_name": oops' });
+  });
+
+  it("records a null reply for a bad_output error that came without one", async () => {
+    const provider = scripted(() => {
+      throw new LlmError("bad_output", "reply has no text block");
+    }, ok);
+
+    const result = await extractChunk(provider, chunk, opts);
+
+    expect(result.calls.map((call) => [call.kind, call.ok, call.rawText])).toEqual([
+      ["extract", false, null],
+      ["retry", true, JSON.stringify(MOCK_EXTRACTION)],
+    ]);
   });
 
   it("retries a truncated reply without sending the cut-off text back", async () => {

@@ -12,6 +12,9 @@ export interface CallInfo {
   usage: { inputTokens: number; outputTokens: number };
   // Null for providers without a context size (everything but ollama).
   numCtx: number | null;
+  // The model's reply as it came back. Missing in runs saved before it was recorded, null when
+  // the call failed without a reply. Stays in the json, the report does not print it.
+  rawText?: string | null | undefined;
 }
 
 export interface RunMeta {

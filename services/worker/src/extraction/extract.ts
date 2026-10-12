@@ -47,6 +47,7 @@ const NOT_JSON = "Reply was not valid JSON";
 type Timing = Pick<LlmCallInfo, "durationMs" | "numCtx">;
 
 type Attempt = Timing &
+  Pick<LlmCallInfo, "rawText"> &
   (
     | { ok: true; data: LlmExtraction; usage: LlmUsage }
     | {
@@ -123,6 +124,7 @@ async function attempt(
     const note = err.truncated ? TRUNCATED_NOTE : rawText.trim() === "" ? EMPTY_REPLY_NOTE : null;
     return {
       ...timing(),
+      rawText: err.rawText ?? null,
       ok: false,
       usage: err.usage ?? ZERO,
       errors: note === null ? `${NOT_JSON}: ${err.message}` : err.message,
@@ -135,10 +137,13 @@ async function attempt(
   }
 
   const parsed = LlmExtractionSchema.safeParse(lowercaseEnums(res.json));
-  if (parsed.success) return { ...timing(), ok: true, data: parsed.data, usage: res.usage };
+  if (parsed.success) {
+    return { ...timing(), rawText: res.rawText, ok: true, data: parsed.data, usage: res.usage };
+  }
   const errors = z.prettifyError(parsed.error).slice(0, MAX_REPAIR_ERRORS_CHARS);
   return {
     ...timing(),
+    rawText: res.rawText,
     ok: false,
     usage: res.usage,
     errors,
@@ -165,6 +170,7 @@ export async function extractChunk(
       durationMs: a.durationMs,
       usage: a.usage,
       numCtx: a.numCtx,
+      rawText: a.rawText,
     });
   };
   const done = (data: LlmExtraction, usage: LlmUsage, repaired: boolean): ChunkExtraction => ({

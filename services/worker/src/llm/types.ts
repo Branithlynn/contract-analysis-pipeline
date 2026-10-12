@@ -41,6 +41,9 @@ export interface LlmCallInfo {
   usage: LlmUsage;
   // Null for providers without a context size setting.
   numCtx: number | null;
+  // The reply as the model wrote it, before any of our code touched it. Null when the call failed
+  // without one. Only the eval json keeps it; the worker leaves it out of its logs.
+  rawText: string | null;
 }
 
 export interface LlmProvider {

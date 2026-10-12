@@ -108,6 +108,29 @@ describe("SavedFileSchema", () => {
     expect(parsed.runs[1]?.result).toBeNull();
   });
 
+  it("keeps the raw reply of each call, and reads a call saved without one", () => {
+    const call = {
+      kind: "extract",
+      chunkIndex: 0,
+      ok: true,
+      durationMs: 1200,
+      usage: { inputTokens: 900, outputTokens: 300 },
+      numCtx: 8192,
+    };
+    const file = savedFile() as { runs: { meta: Record<string, unknown> | null }[] };
+    const meta = file.runs[0]?.meta;
+    if (!meta) throw new Error("fixture has no meta");
+    meta.calls = [
+      { ...call, rawText: '{"vendor_name": "Atlas"}' },
+      { ...call, rawText: null },
+      call,
+    ];
+
+    const calls = SavedFileSchema.parse(file).runs[0]?.meta?.calls ?? [];
+
+    expect(calls.map((c) => c.rawText)).toEqual(['{"vendor_name": "Atlas"}', null, undefined]);
+  });
+
   it("rejects a file that is not a saved run", () => {
     expect(SavedFileSchema.safeParse({ header: {}, runs: [] }).success).toBe(false);
     expect(SavedFileSchema.safeParse({ runs: [] }).success).toBe(false);
