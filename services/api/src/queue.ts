@@ -27,6 +27,8 @@ export class BullMqJobQueue implements JobQueue {
     private readonly attempts: number,
     logger: Logger,
     private readonly backoffDelayMs = 5000,
+    // bullmq's key prefix. Only the e2e test sets it, so its jobs never mix with a dev queue on the same redis.
+    prefix?: string,
   ) {
     // Fail fast: with redis down an upload gets an answer right away and the row stays queued for the
     // reconciler, instead of the request hanging in ioredis's offline queue.
@@ -34,7 +36,10 @@ export class BullMqJobQueue implements JobQueue {
       enableOfflineQueue: false,
       commandTimeout: COMMAND_TIMEOUT_MS,
     });
-    this.queue = new Queue(QUEUE_NAME, { connection: this.redis });
+    this.queue = new Queue(QUEUE_NAME, {
+      connection: this.redis,
+      ...(prefix === undefined ? {} : { prefix }),
+    });
     // bullmq re-emits the client's connection errors here and prints them to the console if nobody listens.
     this.queue.on("error", (err) => {
       logger.warn({ err }, "redis connection error");

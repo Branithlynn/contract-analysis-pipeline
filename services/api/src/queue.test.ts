@@ -92,6 +92,13 @@ describe("BullMqJobQueue", () => {
     expect(redis.options).toEqual({ enableOfflineQueue: false, commandTimeout: 2000 });
     expect(bull.name).toBe(QUEUE_NAME);
     expect(bull.options.connection).toBe(redis);
+    expect(bull.options).not.toHaveProperty("prefix");
+  });
+
+  it("passes a key prefix on to bullmq when it is given one", () => {
+    new BullMqJobQueue("redis://example:6379", 3, createLogger("api", "silent"), 100, "nexus-e2e");
+
+    expect(fakes.queues.at(-1)).toMatchObject({ options: { prefix: "nexus-e2e" } });
   });
 
   it("adds the job under the document and run id, with the retry and cleanup options", async () => {

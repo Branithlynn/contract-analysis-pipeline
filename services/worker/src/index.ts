@@ -1,25 +1,18 @@
-import { Worker } from "bullmq";
 import {
   assertMigrated,
   createLogger,
   createShutdown,
-  ExtractJobPayload,
   loadConfig,
   openDb,
   QUEUE_NAME,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "./deps.js";
-import { concurrencyFor } from "./llm/concurrency.js";
 import { createProvider } from "./llm/factory.js";
 import { undiciVersions } from "./llm/ollama.js";
-import { handleFinalFailure, processJob } from "./pipeline/run.js";
+import { createWorker } from "./worker.js";
 
 const config = loadConfig();
 const logger = createLogger("worker", config.LOG_LEVEL);
-
-function documentIdOf(data: unknown): string | undefined {
-  return ExtractJobPayload.safeParse(data).data?.documentId;
-}
 
 try {
   const db = openDb(config.DATABASE_PATH);
@@ -28,59 +21,21 @@ try {
 
   const provider = createProvider(config);
   const deps: WorkerDeps = { db, config, logger, provider, clock: () => new Date() };
-  const concurrency = concurrencyFor(
-    provider,
-    config.WORKER_CONCURRENCY,
-    "WORKER_CONCURRENCY",
-    logger,
-  );
-
-  // Longer than the slowest llm call, so a long job can't look stalled and run twice in parallel.
-  const lockDurationMs = config.LLM_TIMEOUT_MS + 60_000;
   // close() lets active jobs finish, which can take as long as one llm call.
   // docker compose stop_grace_period has to be longer than this (6m with the defaults), or SIGKILL
   // arrives before active jobs finish.
   const shutdownTimeoutMs = config.LLM_TIMEOUT_MS + 30_000;
 
-  const worker = new Worker(QUEUE_NAME, (job) => processJob(job, deps), {
-    connection: { url: config.REDIS_URL, maxRetriesPerRequest: null },
-    concurrency,
-    lockDuration: lockDurationMs,
-    // A job that crashes a worker twice is failed instead of taking down the next one too.
-    maxStalledCount: 1,
-  });
-
-  worker.on("failed", (job, err) => {
-    // Debug: processJob and handleFinalFailure already log every failure with its stack.
-    logger.debug(
-      {
-        jobId: job?.id,
-        documentId: documentIdOf(job?.data),
-        attemptsMade: job?.attemptsMade,
-        reason: err.message,
-      },
-      "job failed",
-    );
-    try {
-      handleFinalFailure(job, err, deps);
-    } catch (handlerErr) {
-      // A throw inside an event listener would surface as an uncaught exception.
-      logger.error({ jobId: job?.id, err: handlerErr }, "could not mark the document failed");
-    }
-  });
-  // Without a listener bullmq prints connection errors to the console.
-  worker.on("error", (err) => {
-    logger.error({ err }, "worker error");
-  });
+  const worker = createWorker(config, deps);
   logger.info(
     {
       queue: QUEUE_NAME,
-      concurrency,
+      concurrency: worker.opts.concurrency,
       provider: provider.name,
       model: provider.model,
       // The three timeouts depend on each other, so a wrong setting should show up here at startup.
       llmTimeoutMs: config.LLM_TIMEOUT_MS,
-      lockDurationMs,
+      lockDurationMs: worker.opts.lockDuration,
       shutdownTimeoutMs,
       undici: undiciVersions(),
     },

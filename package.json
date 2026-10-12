@@ -18,6 +18,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "pretest:e2e": "tsc -b",
+    "test:e2e": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts",
     "predev": "tsc -b",
     "dev": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/index.js -n tsc,api,worker,web \"tsc -b --watch --preserveWatchOutput\" \"node --watch-path=services/api/dist --watch-path=packages/shared/dist services/api/dist/index.js\" \"node --watch-path=services/worker/dist --watch-path=packages/shared/dist services/worker/dist/index.js\" \"npm run dev -w @nexus/web\"",
     "docker:up": "docker compose up --build -d",
