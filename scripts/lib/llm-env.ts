@@ -41,6 +41,8 @@ export function llmEnvFromArgs(args: LlmArgs): Record<string, string | undefined
   }
   const env: Record<string, string | undefined> = { ...process.env };
   if (args.provider !== undefined) env.LLM_PROVIDER = args.provider;
+  // Asking for the mock on the command line is the permission ALLOW_MOCK stands for.
+  if (args.provider === "mock") env.ALLOW_MOCK = "true";
   if (args.model !== undefined) env.LLM_MODEL = args.model;
   if (args.prompt !== undefined) env.PROMPT_VERSION = args.prompt;
   return env;

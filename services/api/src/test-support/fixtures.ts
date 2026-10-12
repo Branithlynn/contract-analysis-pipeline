@@ -1,5 +1,7 @@
 import { ExtractionResultSchema, type ExtractionResult, type Severity } from "@nexus/shared";
+import { createLogger, loadConfig } from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
+import { createModelCatalog, type ModelCatalog } from "../services/models.js";
 
 // Shared by the route tests. Excluded from the build in tsconfig.json, typechecked via tsconfig.test.json.
 
@@ -13,6 +15,16 @@ export const okQueue: JobQueue = {
   onReady: () => () => undefined,
   close: () => Promise.resolve(),
 };
+
+// The real catalog on a config built from env, with an ollama that does not answer. Tests that
+// are not about models get the mock provider allowed and nothing else to think about.
+export function offlineModels(env: Record<string, string> = { ALLOW_MOCK: "true" }): ModelCatalog {
+  return createModelCatalog({
+    config: loadConfig(env),
+    logger: createLogger("api", "silent"),
+    fetch: () => Promise.reject(new TypeError("fetch failed")),
+  });
+}
 
 export function docId(n: number): string {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;

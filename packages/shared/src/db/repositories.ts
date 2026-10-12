@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { EventOutcome } from "../schemas/api.js";
+import type { LlmProviderName, ModelSelection } from "../providers.js";
 import type { ExtractionResult } from "../schemas/extraction.js";
 import {
   ALLOWED_TRANSITIONS,
@@ -28,6 +29,12 @@ export interface DocumentRow {
   run: number;
   duplicate_of: string | null;
   latest_extraction_id: string | null;
+  // The model the current run was asked to use. Null: the default from the environment.
+  llm_provider: LlmProviderName | null;
+  llm_model: string | null;
+  // Not null while a new run of a completed document is under way: the needs_review to go back
+  // to if that run fails. See failRun.
+  fallback_needs_review: number | null;
   index_status: IndexStatus | null;
   // Why the last indexing attempt failed. Null unless index_status is failed.
   index_error: string | null;
@@ -37,6 +44,10 @@ export interface DocumentRow {
 
 export interface DocumentListRow extends DocumentRow {
   result_json: string | null;
+  // The model and prompt of the extraction the values come from. Null without an extraction.
+  result_provider: string | null;
+  result_model: string | null;
+  result_prompt_version: string | null;
 }
 
 export interface ExportRow extends DocumentRow {
@@ -90,17 +101,24 @@ export interface CreateDocumentInput {
   status: "queued" | "completed";
   duplicate_of?: string | null;
   latest_extraction_id?: string | null;
+  // The model this document is to be analyzed with.
+  model?: ModelSelection | null;
 }
 
 export function createDocument(db: Db, input: CreateDocumentInput): void {
   const ts = now();
+  const { model, ...rest } = input;
   db.prepare<Record<string, unknown>>(
     `INSERT INTO documents
-       (id, original_name, mime, size_bytes, sha256, storage_path, status, duplicate_of, latest_extraction_id, created_at, updated_at)
+       (id, original_name, mime, size_bytes, sha256, storage_path, status, duplicate_of,
+        latest_extraction_id, llm_provider, llm_model, created_at, updated_at)
      VALUES
-       (@id, @original_name, @mime, @size_bytes, @sha256, @storage_path, @status, @duplicate_of, @latest_extraction_id, @created_at, @updated_at)`,
+       (@id, @original_name, @mime, @size_bytes, @sha256, @storage_path, @status, @duplicate_of,
+        @latest_extraction_id, @llm_provider, @llm_model, @created_at, @updated_at)`,
   ).run({
-    ...input,
+    ...rest,
+    llm_provider: model?.provider ?? null,
+    llm_model: model?.model ?? null,
     duplicate_of: input.duplicate_of ?? null,
     latest_extraction_id: input.latest_extraction_id ?? null,
     created_at: ts,
@@ -115,7 +133,8 @@ export function getDocument(db: Db, id: string): DocumentRow | undefined {
 export function listDocuments(db: Db, { limit }: { limit: number }): DocumentListRow[] {
   return db
     .prepare<[number], DocumentListRow>(
-      `SELECT d.*, e.result_json
+      `SELECT d.*, e.result_json, e.provider AS result_provider, e.model AS result_model,
+              e.prompt_version AS result_prompt_version
        FROM documents d
        LEFT JOIN extractions e ON e.id = d.latest_extraction_id
        ORDER BY d.created_at DESC
@@ -137,15 +156,29 @@ export function listCompletedForExport(db: Db): ExportRow[] {
     .all();
 }
 
-export function findCompletedBySha256(db: Db, sha256: string): DocumentRow | undefined {
+// What makes two analyses the same: the file, the model and the prompt. The same file with another
+// model or prompt version is a new analysis, not a duplicate.
+export interface AnalysisKey extends ModelSelection {
+  promptVersion: string;
+}
+
+// A finished, trusted analysis of this file by this model and prompt, to reuse instead of running
+// it again. Only a document's latest extraction counts: needs_review is known for that one only.
+export function findCompletedBySha256(
+  db: Db,
+  sha256: string,
+  key: AnalysisKey,
+): DocumentRow | undefined {
   return db
-    .prepare<[string], DocumentRow>(
-      `SELECT * FROM documents
-       WHERE sha256 = ? AND status = 'completed' AND needs_review = 0
-       ORDER BY created_at DESC
+    .prepare<[string, string, string, string], DocumentRow>(
+      `SELECT d.* FROM documents d
+       JOIN extractions e ON e.id = d.latest_extraction_id
+       WHERE d.sha256 = ? AND d.status = 'completed' AND d.needs_review = 0
+         AND e.provider = ? AND e.model = ? AND e.prompt_version = ?
+       ORDER BY d.created_at DESC
        LIMIT 1`,
     )
-    .get(sha256);
+    .get(sha256, key.provider, key.model, key.promptVersion);
 }
 
 // updated_at rather than created_at, so a document that was just retried is not counted as stale.
@@ -166,6 +199,8 @@ export interface TransitionOptions {
   bumpRun?: boolean;
   bumpAttempts?: boolean;
   resetAttempts?: boolean;
+  // The model for the run that starts with this transition. Only when moving to queued.
+  model?: ModelSelection;
 }
 
 // The WHERE status IN (...) guard is the concurrency control: if two workers, or a worker and a retry,
@@ -192,6 +227,8 @@ export function transitionStatus(
     throw new Error(`Stage cannot be set when moving to ${to}`);
   if (opts.bumpAttempts && opts.resetAttempts)
     throw new Error("bumpAttempts and resetAttempts are exclusive");
+  if (opts.model !== undefined && to !== "queued")
+    throw new Error(`A model can only be set when moving to queued, not ${to}`);
 
   const sets = ["status = @to", "updated_at = @now"];
   const params: Record<string, unknown> = { id, to, now: now() };
@@ -217,6 +254,23 @@ export function transitionStatus(
   if (opts.needs_review !== undefined) {
     sets.push("needs_review = @needs_review");
     params.needs_review = opts.needs_review ? 1 : 0;
+  }
+  if (opts.model !== undefined) {
+    sets.push("llm_provider = @llm_provider", "llm_model = @llm_model");
+    params.llm_provider = opts.model.provider;
+    params.llm_model = opts.model.model;
+  }
+  // A completed document never becomes failed because a later run failed, whichever request
+  // started that run. So a new run of a completed document remembers the needs_review to go back
+  // to, here, where every new run starts: no caller can forget it. sqlite reads status and
+  // needs_review on the right hand side as they were before this update.
+  // Written on each of these moves, so a value from an earlier run cannot linger.
+  if (to === "queued") {
+    sets.push(
+      "fallback_needs_review = CASE WHEN status = 'completed' THEN needs_review ELSE NULL END",
+    );
+  } else if (to === "completed" || to === "failed") {
+    sets.push("fallback_needs_review = NULL");
   }
   if (opts.bumpRun) sets.push("run = run + 1");
   if (opts.bumpAttempts) sets.push("attempts = attempts + 1");
@@ -305,6 +359,129 @@ export function insertExtraction(db: Db, input: InsertExtractionInput): string {
 
 export function getExtraction(db: Db, id: string): ExtractionRow | undefined {
   return db.prepare<[string], ExtractionRow>("SELECT * FROM extractions WHERE id = ?").get(id);
+}
+
+// Every finished run of a document, newest first. A duplicate has no runs of its own, so the
+// extraction it reuses is listed for it.
+export function listExtractionsForDocument(
+  db: Db,
+  documentId: string,
+  latestExtractionId: string | null,
+): ExtractionRow[] {
+  return db
+    .prepare<[string, string | null], ExtractionRow>(
+      `SELECT * FROM extractions
+       WHERE document_id = ? OR id = ?
+       ORDER BY created_at DESC, run DESC`,
+    )
+    .all(documentId, latestExtractionId);
+}
+
+export function getExtractionForRun(
+  db: Db,
+  documentId: string,
+  run: number,
+): ExtractionRow | undefined {
+  return db
+    .prepare<[string, number], ExtractionRow>(
+      "SELECT * FROM extractions WHERE document_id = ? AND run = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(documentId, run);
+}
+
+// failed runs
+
+export interface FailedRunRow {
+  id: number;
+  document_id: string;
+  run: number;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  error_code: ErrorCode;
+  error_message: string;
+  created_at: string;
+}
+
+export function listFailedRuns(db: Db, documentId: string): FailedRunRow[] {
+  return db
+    .prepare<[string], FailedRunRow>(
+      "SELECT * FROM failed_runs WHERE document_id = ? ORDER BY run DESC",
+    )
+    .all(documentId);
+}
+
+export interface FailRunInput {
+  documentId: string;
+  run: number;
+  model: ModelSelection;
+  promptVersion: string;
+  code: ErrorCode;
+  message: string;
+}
+
+// failed: the document is failed now. kept_completed: it was a new run of a completed document
+// (a retry or a reanalysis), which is completed again with the extraction it had. skipped: the document is not
+// processing this run any more, nothing was written.
+export type FailRunOutcome = "failed" | "kept_completed" | "skipped";
+
+const MAX_EVENT_CHARS = 500;
+
+// The one place a run ends without a result. Records the run as failed, then either fails the
+// document or, when the document was completed before this run, puts it back: completed, the
+// needs_review it had, latest_extraction_id never touched. Only a document that never completed
+// can be failed. A second opinion that did not arrive is no reason to take away the first.
+// One transaction, guarded on status and run like the success path, so it never overrides what
+// another run wrote.
+export function failRun(db: Db, input: FailRunInput): FailRunOutcome {
+  const { documentId, run, model, code, message } = input;
+  return db.transaction((): FailRunOutcome => {
+    const doc = getDocument(db, documentId);
+    if (doc?.status !== "processing" || doc.run !== run) return "skipped";
+
+    db.prepare<Record<string, unknown>>(
+      `INSERT OR REPLACE INTO failed_runs
+         (document_id, run, provider, model, prompt_version, error_code, error_message, created_at)
+       VALUES
+         (@document_id, @run, @provider, @model, @prompt_version, @error_code, @error_message, @created_at)`,
+    ).run({
+      document_id: documentId,
+      run,
+      provider: model.provider,
+      model: model.model,
+      prompt_version: input.promptVersion,
+      error_code: code,
+      error_message: message,
+      created_at: now(),
+    });
+
+    if (doc.fallback_needs_review === null) {
+      const moved = transitionStatus(db, documentId, "failed", {
+        from: "processing",
+        error_code: code,
+        error_message: message,
+      });
+      return moved ? "failed" : "skipped";
+    }
+
+    const moved = transitionStatus(db, documentId, "completed", {
+      from: "processing",
+      needs_review: doc.fallback_needs_review === 1,
+    });
+    if (!moved) return "skipped";
+    insertEvent(db, {
+      document_id: documentId,
+      run,
+      stage: "job",
+      outcome: "error",
+      message:
+        `run ${String(run)} with ${model.provider} / ${model.model} failed, the previous result is kept. ${code}: ${message}`.slice(
+          0,
+          MAX_EVENT_CHARS,
+        ),
+    });
+    return "kept_completed";
+  })();
 }
 
 // events

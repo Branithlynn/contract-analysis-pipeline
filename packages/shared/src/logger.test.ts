@@ -19,7 +19,10 @@ describe("createLogger", () => {
 
   it("redacts top level api keys", () => {
     const { lines, stream } = capture();
-    createLogger("api", "info", stream).info({ apiKey: "sk-1", api_key: "sk-2" }, "boot");
+    createLogger("api", "info", stream).info(
+      { apiKey: "test-key-1", api_key: "test-key-2" },
+      "boot",
+    );
     expect(lines[0]).toMatchObject({ apiKey: "[Redacted]", api_key: "[Redacted]" });
   });
 
@@ -28,8 +31,8 @@ describe("createLogger", () => {
     createLogger("api", "info", stream).info(
       {
         req: { headers: { authorization: "Bearer secret", host: "x" } },
-        provider: { apiKey: "sk-1", name: "openai" },
-        config: { api_key: "sk-2" },
+        provider: { apiKey: "test-key-1", name: "openai" },
+        config: { api_key: "test-key-2" },
       },
       "request",
     );

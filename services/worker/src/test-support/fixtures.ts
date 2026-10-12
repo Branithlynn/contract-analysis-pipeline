@@ -25,15 +25,17 @@ export function makeDeps(env: Record<string, string> = {}) {
   };
   const db = openMemoryDb();
   migrate(db);
+  const provider = new MockProvider();
   const deps: WorkerDeps = {
     db,
     config: loadConfig(env),
     logger: createLogger("worker", "debug", stream),
-    provider: new MockProvider(),
+    // One mock for every selection, so a test can look at its calls whatever model a job named.
+    providers: { get: () => provider },
     embedder: new MockEmbedder(),
     clock: () => NOW,
   };
-  return { deps, lines };
+  return { deps, lines, provider };
 }
 
 export function seedDocument(deps: WorkerDeps, overrides: Partial<CreateDocumentInput> = {}) {

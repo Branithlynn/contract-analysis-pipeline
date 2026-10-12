@@ -38,6 +38,7 @@ export default defineConfig([
       "packages/shared/src/formats.ts",
       "packages/shared/src/limits.ts",
       "packages/shared/src/chunk-pages.ts",
+      "packages/shared/src/providers.ts",
       "packages/shared/src/schemas/**",
     ],
     rules: {

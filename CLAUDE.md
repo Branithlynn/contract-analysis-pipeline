@@ -34,6 +34,7 @@ Take-home: upload vendor contracts (pdf/docx), process them async, extract struc
 - model extracts facts, code does date math. every value has a quote that gets verified against the doc text
 - document text is untrusted, it only goes inside the <document> block in the prompt
 - no network in unit tests, use MockProvider or stub fetch
+- no literal key-shaped strings in the repo, the pre-commit key check must stay silent. fake keys in tests are placeholders like "test-openai-key"; when a test needs a key-shaped value, build it at runtime ("sk" + "-ant-" + "x".repeat(20))
 
 ## docs / readme
 - first person, plain, no marketing words, no em dashes

@@ -1,4 +1,4 @@
-import { insertEvent, type Db } from "@nexus/shared/node";
+import { insertEvent, type Db, type ModelSelection } from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
 
 export const QUEUE_DEFERRED_MESSAGE = "queue unavailable, will retry automatically";
@@ -11,9 +11,10 @@ export async function enqueueOrDefer(
   { db, queue }: { db: Db; queue: JobQueue },
   documentId: string,
   run: number,
+  model: ModelSelection,
 ): Promise<EnqueueOutcome> {
   try {
-    await queue.enqueue(documentId, run);
+    await queue.enqueue(documentId, run, model);
     return { enqueued: true };
   } catch (err) {
     insertEvent(db, {

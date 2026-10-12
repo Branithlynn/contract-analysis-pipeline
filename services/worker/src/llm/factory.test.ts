@@ -47,7 +47,7 @@ describe("createProvider", () => {
   });
 
   it("builds the mock", () => {
-    const provider = createProvider(loadConfig({ LLM_PROVIDER: "mock" }));
+    const provider = createProvider(loadConfig({ LLM_PROVIDER: "mock", ALLOW_MOCK: "true" }));
 
     expect(provider).toBeInstanceOf(MockProvider);
   });

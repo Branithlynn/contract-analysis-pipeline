@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createLogger, loadConfig, openMemoryDb, MockEmbedder } from "@nexus/shared/node";
 import { requestIdFrom } from "./request-id.js";
 import { buildServer } from "./server.js";
-import { okQueue } from "./test-support/fixtures.js";
+import { okQueue, offlineModels } from "./test-support/fixtures.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -43,6 +43,7 @@ describe("request id in the api logs", () => {
       config: loadConfig({}),
       logger: createLogger("api", "info", stream),
       embedder: new MockEmbedder(),
+      models: offlineModels(),
       clock: () => new Date("2026-06-01T12:00:00Z"),
     });
     return { app, lines };

@@ -14,7 +14,7 @@ import {
   type Embedder,
 } from "@nexus/shared/node";
 import { buildServer } from "../server.js";
-import { docId, okQueue } from "../test-support/fixtures.js";
+import { docId, okQueue, offlineModels } from "../test-support/fixtures.js";
 
 const TERMINATION = "Either party may terminate this agreement with 60 days written notice.";
 const PAYMENT = "Invoices are payable within 30 days of the invoice date.";
@@ -67,6 +67,7 @@ async function setup(embedder: Embedder = new MockEmbedder()) {
     config: loadConfig({}),
     logger: createLogger("api", "info", stream),
     embedder,
+    models: offlineModels(),
     clock: () => new Date("2026-06-01T12:00:00Z"),
   });
   const search = (query: string) => app.inject({ method: "GET", url: `/api/search?${query}` });

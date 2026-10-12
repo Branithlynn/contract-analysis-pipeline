@@ -11,13 +11,15 @@ import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   DocumentDetailSchema,
+  ErrorBodySchema,
+  ModelsResponseSchema,
   SearchResponseSchema,
   UploadResponseSchema,
   type DocumentDetail,
   type LlmExtraction,
 } from "@nexus/shared";
 import {
-  QUEUE_NAME,
+  QUEUE_NAMES,
   assertMigrated,
   createLogger,
   jobIdFor,
@@ -26,13 +28,17 @@ import {
   openDb,
   MockEmbedder,
   type Db,
+  type QueueKind,
 } from "@nexus/shared/node";
 import { BullMqJobQueue } from "../../services/api/src/queue.js";
 import { buildServer } from "../../services/api/src/server.js";
+import { createModelCatalog, type ModelCatalog } from "../../services/api/src/services/models.js";
 import type { WorkerDeps } from "../../services/worker/src/deps.js";
 import { LlmError } from "../../services/worker/src/llm/errors.js";
+import { createProviderRegistry } from "../../services/worker/src/llm/factory.js";
 import { MockProvider } from "../../services/worker/src/llm/mock.js";
-import { createWorker } from "../../services/worker/src/worker.js";
+import type { LlmRequest } from "../../services/worker/src/llm/types.js";
+import { createWorkers } from "../../services/worker/src/worker.js";
 
 const SAMPLES = fileURLToPath(new URL("../../samples/generated/", import.meta.url));
 // The day the expected dates in evals/cases were worked out for.
@@ -133,7 +139,8 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
   let queue: BullMqJobQueue;
   // A second handle on the same queue, for looking at jobs and for wiping it afterwards.
   let inspector: Queue;
-  let worker: Worker;
+  let workers: Record<QueueKind, Worker>;
+  let models: ModelCatalog;
   let app: Awaited<ReturnType<typeof buildServer>>;
   let baseUrl: string;
   // How many of the next model calls fail as "provider unavailable".
@@ -147,6 +154,7 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
       UPLOAD_DIR: join(dir, "uploads"),
       REDIS_URL: redisUrl,
       LLM_PROVIDER: "mock",
+      ALLOW_MOCK: "true",
     });
     const logger = createLogger("e2e", "silent");
 
@@ -158,30 +166,41 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
 
     // 100ms backoff instead of 5s, so the retry step waits 300ms in total and not 15s.
     queue = new BullMqJobQueue(redisUrl, config.JOB_ATTEMPTS, logger, 100, prefix);
-    inspector = new Queue(QUEUE_NAME, { connection: { url: redisUrl }, prefix });
+    // The mock is not ollama, so every job of this test is on the hosted queue.
+    inspector = new Queue(QUEUE_NAMES.hosted, { connection: { url: redisUrl }, prefix });
 
     // One embedder for both sides, like the two services sharing EMBED_PROVIDER and EMBED_MODEL.
     const embedder = new MockEmbedder();
-    app = await buildServer({ db: apiDb, queue, config, logger, embedder, clock: CLOCK });
+    // The real catalog: it only asks ollama when a request names ollama, and none here does.
+    models = createModelCatalog({ config, logger });
+    app = await buildServer({ db: apiDb, queue, config, logger, embedder, models, clock: CLOCK });
     await app.listen({ host: "127.0.0.1", port: 0 });
     baseUrl = `http://127.0.0.1:${String((app.server.address() as AddressInfo).port)}`;
 
-    const provider = new MockProvider((req) => {
+    const responder = (req: LlmRequest) => {
       if (failNextCalls > 0) {
         failNextCalls--;
         throw new LlmError("unavailable", "provider is down");
       }
       return req.schemaName === "contract_summary" ? { summary: SAAS_REPLY.summary } : SAAS_REPLY;
+    };
+    // Built per job from what the job asks for, like the worker's registry. The same canned
+    // reply under whichever mock model was picked, so the stored model shows the selection.
+    const providers = createProviderRegistry(config, (_config, selection) => {
+      if (selection.provider !== "mock")
+        throw new Error(`unexpected provider ${selection.provider}`);
+      return new MockProvider(responder, selection.model);
     });
-    const deps: WorkerDeps = { db: workerDb, config, logger, provider, embedder, clock: CLOCK };
-    // The production worker: same bullmq options and handlers as services/worker/src/index.ts.
-    worker = createWorker(config, deps, prefix);
-    await worker.waitUntilReady();
+    const deps: WorkerDeps = { db: workerDb, config, logger, providers, embedder, clock: CLOCK };
+    // The production workers: same bullmq options and handlers as services/worker/src/index.ts.
+    workers = createWorkers(config, deps, prefix);
+    await Promise.all([workers.local.waitUntilReady(), workers.hosted.waitUntilReady()]);
   });
 
   afterAll(async () => {
-    await worker.close();
+    await Promise.all([workers.local.close(), workers.hosted.close()]);
     await app.close();
+    await models.close();
     await queue.close();
     await inspector.obliterate({ force: true });
     await inspector.close();
@@ -190,10 +209,13 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  async function upload(file: string) {
+  // model: "provider/model", sent as the two query parameters the upload route takes.
+  async function upload(file: string, model?: string) {
     const form = new FormData();
     form.append("files", new Blob([await readFile(join(SAMPLES, file))]), file);
-    const res = await fetch(`${baseUrl}/api/documents`, { method: "POST", body: form });
+    const [provider, name] = model?.split("/") ?? [];
+    const query = model === undefined ? "" : `?provider=${provider ?? ""}&model=${name ?? ""}`;
+    const res = await fetch(`${baseUrl}/api/documents${query}`, { method: "POST", body: form });
     const body = UploadResponseSchema.parse(await res.json());
     const [accepted] = body.accepted;
     if (!accepted) throw new Error(`${file} was not accepted: ${JSON.stringify(body)}`);
@@ -310,5 +332,163 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
       "LLM_UNAVAILABLE: provider is down, retrying as attempt 2 of 3",
       "LLM_UNAVAILABLE: provider is down, retrying as attempt 3 of 3",
     ]);
+  });
+
+  it("lists the mock as selectable and the hosted providers as unavailable without their keys", async () => {
+    const res = await fetch(`${baseUrl}/api/models`);
+
+    const body = ModelsResponseSchema.parse(await res.json());
+    expect(body.default).toEqual({ provider: "mock", model: "mock" });
+    const byProvider = new Map(body.providers.map((p) => [p.provider, p]));
+    expect(byProvider.get("mock")).toMatchObject({ available: true, models: ["mock", "mock-alt"] });
+    expect(byProvider.get("openai")).toMatchObject({
+      available: false,
+      reason: "OPENAI_API_KEY is not set",
+    });
+  });
+
+  it("refuses an upload that names a model which is not available, before anything is stored", async () => {
+    const before = await jobCount();
+    const form = new FormData();
+    form.append("files", new Blob([await readFile(join(SAMPLES, "hardware-supply.pdf"))]), "h.pdf");
+
+    const res = await fetch(`${baseUrl}/api/documents?provider=openai&model=gpt-5-mini`, {
+      method: "POST",
+      body: form,
+    });
+
+    expect(res.status).toBe(400);
+    expect(ErrorBodySchema.parse(await res.json()).error).toEqual({
+      code: "MODEL_UNAVAILABLE",
+      message: "OPENAI_API_KEY is not set",
+    });
+    expect(await jobCount()).toBe(before);
+  });
+
+  it("analyzes an upload with the model it names and stores provider and model on the run", async () => {
+    const { status, accepted } = await upload("hardware-supply.pdf", "mock/mock-alt");
+    expect(status).toBe(202);
+    expect(accepted).toMatchObject({ status: "queued", duplicate_of: null });
+    // The job carries the selection, that is what the worker builds its provider from.
+    const job = await inspector.getJob(jobIdFor(accepted.id, 1));
+    expect(job?.data).toMatchObject({ provider: "mock", model: "mock-alt" });
+
+    const doc = await waitUntilDone(accepted.id);
+
+    expect(doc).toMatchObject({
+      status: "completed",
+      requested_provider: "mock",
+      requested_model: "mock-alt",
+      result_provider: "mock",
+      result_model: "mock-alt",
+    });
+    expect(doc.extraction).toMatchObject({ provider: "mock", model: "mock-alt" });
+    expect(doc.runs).toMatchObject([{ run: 1, provider: "mock", model: "mock-alt", latest: true }]);
+  });
+
+  it("treats the same file with another model as a new analysis, not a duplicate", async () => {
+    // The first test analyzed this file with the default mock model.
+    const { accepted } = await upload("saas-subscription.pdf", "mock/mock-alt");
+
+    expect(accepted).toMatchObject({ status: "queued", duplicate_of: null });
+    const doc = await waitUntilDone(accepted.id);
+    expect(doc.extraction).toMatchObject({ provider: "mock", model: "mock-alt" });
+
+    // And now there is a result for that model too, so the same upload again is a duplicate of it.
+    const again = await upload("saas-subscription.pdf", "mock/mock-alt");
+    expect(again.accepted).toMatchObject({ status: "completed", duplicate_of: accepted.id });
+  });
+
+  it("reanalyzes a document with another model as a second run and keeps the first", async () => {
+    const before = await detail(firstId);
+    expect(before.runs).toMatchObject([{ run: 1, model: "mock", latest: true }]);
+
+    const res = await fetch(`${baseUrl}/api/documents/${firstId}/reanalyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "mock", model: "mock-alt" }),
+    });
+    expect(res.status).toBe(202);
+
+    const doc = await waitUntilDone(firstId);
+
+    expect(doc).toMatchObject({
+      status: "completed",
+      run: 2,
+      requested_model: "mock-alt",
+      result_model: "mock-alt",
+    });
+    expect(doc.extraction).toMatchObject({ provider: "mock", model: "mock-alt" });
+    // Newest first, and the first run is still there with its own model.
+    expect(doc.runs).toMatchObject([
+      { run: 2, provider: "mock", model: "mock-alt", latest: true },
+      { run: 1, provider: "mock", model: "mock", latest: false },
+    ]);
+    const first = DocumentDetailSchema.parse(
+      await (await fetch(`${baseUrl}/api/documents/${firstId}?run=1`)).json(),
+    );
+    expect(first.extraction).toMatchObject({
+      model: "mock",
+      created_at: before.extraction?.created_at,
+    });
+    expect(first.vendor_name).toBe("Cloudhaven Software Ltd.");
+  });
+
+  it("keeps a completed document completed when a reanalysis fails on every attempt", async () => {
+    const before = await detail(firstId);
+    expect(before).toMatchObject({ status: "completed", run: 2 });
+    // The provider is down for all three attempts of the next job.
+    failNextCalls = 3;
+
+    const res = await fetch(`${baseUrl}/api/documents/${firstId}/reanalyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "mock", model: "mock" }),
+    });
+    expect(res.status).toBe(202);
+    // bullmq has given up on the job: that is the moment the run is over.
+    const jobId = jobIdFor(firstId, 3);
+    await expect
+      .poll(async () => (await inspector.getJob(jobId))?.getState(), {
+        timeout: WAIT_MS,
+        interval: POLL_MS,
+      })
+      .toBe("failed");
+
+    const doc = await waitUntilDone(firstId);
+
+    expect(failNextCalls).toBe(0);
+    expect(doc).toMatchObject({
+      status: "completed",
+      error_code: null,
+      run: 3,
+      vendor_name: before.vendor_name,
+      needs_review: before.needs_review,
+      // Asked for mock, showing the values of mock-alt, and saying so.
+      requested_model: "mock",
+      result_model: "mock-alt",
+    });
+    // Still the result of the second run, the last one that worked.
+    expect(doc.extraction).toMatchObject({
+      model: "mock-alt",
+      created_at: before.extraction?.created_at,
+    });
+    expect(doc.runs).toMatchObject([
+      {
+        run: 3,
+        status: "failed",
+        error_code: "LLM_UNAVAILABLE",
+        provider: "mock",
+        model: "mock",
+        latest: false,
+      },
+      { run: 2, status: "completed", model: "mock-alt", latest: true },
+      { run: 1, status: "completed", model: "mock", latest: false },
+    ]);
+    expect(doc.events.at(-1)).toMatchObject({
+      outcome: "error",
+      message:
+        "run 3 with mock / mock failed, the previous result is kept. LLM_UNAVAILABLE: provider is down",
+    });
   });
 });

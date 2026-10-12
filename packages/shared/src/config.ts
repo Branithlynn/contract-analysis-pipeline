@@ -1,8 +1,6 @@
 import { z } from "zod";
 import { DEFAULT_MAX_FILES_PER_REQUEST, DEFAULT_MAX_UPLOAD_MB } from "./limits.js";
-
-export const LlmProviderName = z.enum(["ollama", "anthropic", "openai", "mock"]);
-export type LlmProviderName = z.infer<typeof LlmProviderName>;
+import { LlmProviderName, MOCK_MODELS } from "./providers.js";
 
 // No anthropic here: it has no embeddings api.
 export const EmbedProviderName = z.enum(["ollama", "openai", "mock"]);
@@ -20,6 +18,15 @@ export const ExtractPromptVersion = z.enum(["extract.v1", "extract.v2", "extract
 export type ExtractPromptVersion = z.infer<typeof ExtractPromptVersion>;
 
 const PositiveInt = z.coerce.number().int().positive();
+
+// A comma separated list as an array without blanks and repeats, the default model first.
+function modelList(csv: string, defaultModel: string | null): string[] {
+  const listed = csv
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");
+  return [...new Set(defaultModel === null ? listed : [defaultModel, ...listed])];
+}
 
 const ConfigSchema = z
   .object({
@@ -50,6 +57,14 @@ const ConfigSchema = z
     OLLAMA_URL: z.url().default("http://localhost:11434"),
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
+    // The hosted models a request may pick, comma separated. An allowlist, so a client cannot
+    // send any model name it likes and run up a bill. LLM_MODEL is always added to the list of
+    // its own provider, the default has to be selectable.
+    OPENAI_MODELS: z.string().default("gpt-5-mini"),
+    ANTHROPIC_MODELS: z.string().default("claude-sonnet-5-5"),
+    // The mock answers with a canned extraction. Off unless asked for, so a deployment can never
+    // be told to analyze a contract with it. On in dev and ci.
+    ALLOW_MOCK: z.enum(["true", "false"]).default("false"),
     // Per llm call. Hosted providers answer in seconds; this is for a full chunk on a local gpu.
     LLM_TIMEOUT_MS: PositiveInt.default(300000),
     // Sized so qwen2.5:7b mostly fits a 6 GB GPU (num_ctx 10240). Longer documents are chunked.
@@ -72,6 +87,13 @@ const ConfigSchema = z
           });
         }
       }
+      if (config.LLM_PROVIDER === "mock" && config.ALLOW_MOCK !== "true") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["ALLOW_MOCK"],
+          message: "has to be true when LLM_PROVIDER=mock",
+        });
+      }
       if (
         config.EMBED_PROVIDER === "openai" &&
         config.LLM_PROVIDER !== "openai" &&
@@ -92,6 +114,21 @@ const ConfigSchema = z
   .transform((config) => ({
     ...config,
     EMBED_MODEL: config.EMBED_MODEL ?? DEFAULT_EMBED_MODELS[config.EMBED_PROVIDER],
+    // LLM_MODEL in .env usually still names a real model when the provider is switched to the
+    // mock. The mock has its own names, so the default becomes the first of them.
+    LLM_MODEL:
+      config.LLM_PROVIDER === "mock" && !MOCK_MODELS.includes(config.LLM_MODEL)
+        ? (MOCK_MODELS[0] ?? "mock")
+        : config.LLM_MODEL,
+    ALLOW_MOCK: config.ALLOW_MOCK === "true",
+    OPENAI_MODELS: modelList(
+      config.OPENAI_MODELS,
+      config.LLM_PROVIDER === "openai" ? config.LLM_MODEL : null,
+    ),
+    ANTHROPIC_MODELS: modelList(
+      config.ANTHROPIC_MODELS,
+      config.LLM_PROVIDER === "anthropic" ? config.LLM_MODEL : null,
+    ),
   }));
 export type Config = z.infer<typeof ConfigSchema>;
 

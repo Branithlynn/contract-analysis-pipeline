@@ -14,7 +14,15 @@ import {
 } from "@nexus/shared/node";
 import { buildServer } from "../server.js";
 import { EXPORT_COLUMNS } from "../services/export.js";
-import { clause, docId, extractionResult, field, NOW, okQueue } from "../test-support/fixtures.js";
+import {
+  clause,
+  docId,
+  extractionResult,
+  field,
+  NOW,
+  okQueue,
+  offlineModels,
+} from "../test-support/fixtures.js";
 
 let db: Db;
 
@@ -81,6 +89,7 @@ async function exportCsv() {
     config: loadConfig({}),
     logger: createLogger("api", "silent"),
     embedder: new MockEmbedder(),
+    models: offlineModels(),
     clock: () => NOW,
   });
   return app.inject({ method: "GET", url: "/api/documents/export.csv" });

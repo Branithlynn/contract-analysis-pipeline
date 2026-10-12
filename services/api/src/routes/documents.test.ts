@@ -21,14 +21,10 @@ import {
 } from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
 import { buildServer } from "../server.js";
+import { offlineModels } from "../test-support/fixtures.js";
+import { multipart, pdf, type FilePart } from "../test-support/upload.js";
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-// Smallest thing file-type calls a pdf: it only looks at the magic bytes.
-function pdf(size = 200): Buffer {
-  const head = Buffer.from("%PDF-1.4\n");
-  return Buffer.concat([head, Buffer.alloc(Math.max(0, size - head.length), 0x20)]);
-}
 
 // A stored (uncompressed) zip, enough for file-type to tell docx from a plain zip.
 function zip(entries: Record<string, string>): Buffer {
@@ -76,28 +72,6 @@ function docx(): Buffer {
   });
 }
 
-type FilePart = { filename: string; content: Buffer; contentType?: string };
-
-function multipart(files: FilePart[]) {
-  const boundary = "nexus-upload-boundary";
-  const chunks: Buffer[] = [];
-  for (const f of files) {
-    chunks.push(
-      Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${f.filename}"\r\n` +
-          `Content-Type: ${f.contentType ?? "application/octet-stream"}\r\n\r\n`,
-      ),
-      f.content,
-      Buffer.from("\r\n"),
-    );
-  }
-  chunks.push(Buffer.from(`--${boundary}--\r\n`));
-  return {
-    payload: Buffer.concat(chunks),
-    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
-  };
-}
-
 const sha = (buf: Buffer) => createHash("sha256").update(buf).digest("hex");
 
 let uploadDir: string;
@@ -141,6 +115,7 @@ async function setup({ env = {}, failEnqueue = false } = {}) {
     config: loadConfig({ UPLOAD_DIR: uploadDir, ...env }),
     logger: createLogger("api", "info", stream),
     embedder: new MockEmbedder(),
+    models: offlineModels(),
     clock: () => new Date("2026-06-01T12:00:00Z"),
   });
   const upload = async (files: FilePart[]) => {
@@ -253,9 +228,10 @@ describe("POST /api/documents", () => {
     const extractionId = insertExtraction(db, {
       document_id: "11111111-1111-4111-8111-111111111111",
       run: 1,
-      provider: "mock",
-      model: "mock",
-      prompt_version: "v1",
+      // The default selection and prompt, which is what an upload without a model asks for.
+      provider: "ollama",
+      model: "qwen2.5:7b-instruct",
+      prompt_version: "extract.v3",
       // The repo stores whatever it is given; the shape doesn't matter for dedupe.
       result: { summary: "x" } as unknown as ExtractionResult,
       grounding_score: 1,

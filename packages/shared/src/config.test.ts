@@ -36,9 +36,10 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ LLM_PROVIDER: "anthropic" })).toThrow(/ANTHROPIC_API_KEY/);
     expect(() => loadConfig({ LLM_PROVIDER: "openai" })).toThrow(/OPENAI_API_KEY/);
     expect(
-      loadConfig({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "sk-test" }).LLM_PROVIDER,
+      loadConfig({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "test-anthropic-key" })
+        .LLM_PROVIDER,
     ).toBe("anthropic");
-    expect(loadConfig({ LLM_PROVIDER: "mock" }).LLM_PROVIDER).toBe("mock");
+    expect(loadConfig({ LLM_PROVIDER: "mock", ALLOW_MOCK: "true" }).LLM_PROVIDER).toBe("mock");
   });
 
   it("lists every bad key on its own line", () => {
@@ -81,9 +82,9 @@ describe("loadConfig", () => {
       EMBED_PROVIDER: "ollama",
       EMBED_MODEL: "nomic-embed-text",
     });
-    expect(loadConfig({ EMBED_PROVIDER: "openai", OPENAI_API_KEY: "sk-test" }).EMBED_MODEL).toBe(
-      "text-embedding-3-small",
-    );
+    expect(
+      loadConfig({ EMBED_PROVIDER: "openai", OPENAI_API_KEY: "test-openai-key" }).EMBED_MODEL,
+    ).toBe("text-embedding-3-small");
     expect(loadConfig({ EMBED_PROVIDER: "mock" }).EMBED_MODEL).toBe("mock");
     // Blank counts as unset, compose passes EMBED_MODEL through like that.
     expect(loadConfig({ EMBED_PROVIDER: "mock", EMBED_MODEL: "" }).EMBED_MODEL).toBe("mock");
@@ -103,7 +104,8 @@ describe("loadConfig", () => {
   it("has no anthropic embeddings, and keeps the embed provider apart from the llm provider", () => {
     expect(() => loadConfig({ EMBED_PROVIDER: "anthropic" })).toThrow(/EMBED_PROVIDER/);
     expect(
-      loadConfig({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "sk-test" }).EMBED_PROVIDER,
+      loadConfig({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "test-anthropic-key" })
+        .EMBED_PROVIDER,
     ).toBe("ollama");
   });
 
@@ -122,6 +124,46 @@ describe("loadConfig", () => {
       message = err instanceof Error ? err.message : String(err);
     }
     expect(message.match(/OPENAI_API_KEY/g)).toHaveLength(1);
+  });
+
+  it("only takes the mock as the default provider when ALLOW_MOCK is true", () => {
+    expect(loadConfig({}).ALLOW_MOCK).toBe(false);
+    expect(loadConfig({ ALLOW_MOCK: "true" }).ALLOW_MOCK).toBe(true);
+    expect(loadConfig({ ALLOW_MOCK: "" }).ALLOW_MOCK).toBe(false);
+    expect(() => loadConfig({ LLM_PROVIDER: "mock" })).toThrow(
+      /ALLOW_MOCK: has to be true when LLM_PROVIDER=mock/,
+    );
+    expect(() => loadConfig({ LLM_PROVIDER: "mock", ALLOW_MOCK: "false" })).toThrow(/ALLOW_MOCK/);
+    expect(() => loadConfig({ ALLOW_MOCK: "yes" })).toThrow(/ALLOW_MOCK/);
+  });
+
+  it("gives the mock one of its own model names, whatever LLM_MODEL still says", () => {
+    const mock = { LLM_PROVIDER: "mock", ALLOW_MOCK: "true" };
+    // LLM_MODEL left at the ollama default, as in a .env where only the provider was switched.
+    expect(loadConfig(mock).LLM_MODEL).toBe("mock");
+    expect(loadConfig({ ...mock, LLM_MODEL: "gpt-5-mini" }).LLM_MODEL).toBe("mock");
+    expect(loadConfig({ ...mock, LLM_MODEL: "mock-alt" }).LLM_MODEL).toBe("mock-alt");
+    expect(loadConfig({}).LLM_MODEL).toBe("qwen2.5:7b-instruct");
+  });
+
+  it("reads the hosted model allowlists and puts the default model on its own provider's list", () => {
+    expect(loadConfig({})).toMatchObject({
+      OPENAI_MODELS: ["gpt-5-mini"],
+      ANTHROPIC_MODELS: ["claude-sonnet-5-5"],
+    });
+    expect(loadConfig({ OPENAI_MODELS: "gpt-5-mini, gpt-5 ,,gpt-5" }).OPENAI_MODELS).toEqual([
+      "gpt-5-mini",
+      "gpt-5",
+    ]);
+    const openai = loadConfig({
+      LLM_PROVIDER: "openai",
+      LLM_MODEL: "gpt-5",
+      OPENAI_API_KEY: "test-openai-key",
+    });
+    expect(openai.OPENAI_MODELS).toEqual(["gpt-5", "gpt-5-mini"]);
+    expect(openai.ANTHROPIC_MODELS).toEqual(["claude-sonnet-5-5"]);
+    // An ollama default model is not a hosted model.
+    expect(loadConfig({ LLM_MODEL: "llama3.2" }).OPENAI_MODELS).toEqual(["gpt-5-mini"]);
   });
 
   it("returns the same object for the same env", () => {

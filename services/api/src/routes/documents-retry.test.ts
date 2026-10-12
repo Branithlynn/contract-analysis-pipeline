@@ -14,6 +14,7 @@ import {
 } from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
 import { buildServer } from "../server.js";
+import { offlineModels } from "../test-support/fixtures.js";
 
 const ID = "00000000-0000-4000-8000-000000000001";
 
@@ -70,6 +71,7 @@ async function setup({ failEnqueue = false } = {}) {
     config: loadConfig({}),
     logger: createLogger("api", "silent"),
     embedder: new MockEmbedder(),
+    models: offlineModels(),
     clock: () => new Date("2026-06-01T12:00:00Z"),
   });
   const retry = (id = ID) => app.inject({ method: "POST", url: `/api/documents/${id}/retry` });

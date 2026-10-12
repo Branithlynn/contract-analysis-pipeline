@@ -12,5 +12,7 @@ export * from "./llm/errors.js";
 export * from "./llm/ollama-transport.js";
 export * from "./llm/openai-errors.js";
 export * from "./logger.js";
+export * from "./models.js";
+export * from "./providers.js";
 export * from "./queue.js";
 export * from "./shutdown.js";

@@ -1,4 +1,10 @@
-import { findStaleQueued, type Db, type Logger } from "@nexus/shared/node";
+import {
+  findStaleQueued,
+  selectionOr,
+  type Db,
+  type Logger,
+  type ModelSelection,
+} from "@nexus/shared/node";
 import type { JobQueue } from "./queue.js";
 
 // Inserting the row and enqueueing are two systems with no shared transaction, so a crash in between
@@ -10,6 +16,8 @@ export interface ReconcilerDeps {
   queue: JobQueue;
   logger: Logger;
   clock: () => Date;
+  // For rows from before a model could be chosen, which carry none.
+  defaultModel: ModelSelection;
   intervalMs?: number;
   staleAfterMs?: number;
 }
@@ -34,6 +42,7 @@ export function startReconciler({
   queue,
   logger,
   clock,
+  defaultModel,
   intervalMs = 60_000,
   staleAfterMs = 60_000,
 }: ReconcilerDeps): Reconciler {
@@ -57,7 +66,12 @@ export function startReconciler({
           return result;
         }
         try {
-          await queue.enqueue(row.id, row.run);
+          // The row knows its model, so the job lands on the same queue the upload would have used.
+          const model = selectionOr(
+            { provider: row.llm_provider, model: row.llm_model },
+            defaultModel,
+          );
+          await queue.enqueue(row.id, row.run, model);
           result.enqueued++;
         } catch (err) {
           result.failed++;

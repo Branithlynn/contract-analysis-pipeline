@@ -7,9 +7,10 @@ import {
   type DocumentEvent,
   type DocumentSummary,
   type ExtractionResult,
+  type RunSummary,
   type Severity,
 } from "@nexus/shared";
-import type { DocumentRow, EventRow, ExtractionRow } from "@nexus/shared/node";
+import type { DocumentRow, EventRow, ExtractionRow, FailedRunRow } from "@nexus/shared/node";
 
 const SEVERITY_RANK: Record<Severity, number> = { low: 1, medium: 2, high: 3 };
 
@@ -85,7 +86,39 @@ export function readStoredResult(
 }
 
 // Expects a result that already went through withFreshDerived.
-export function toSummary(row: DocumentRow, result: ExtractionResult | null): DocumentSummary {
+// Which model and prompt produced an extraction. The list query and the extraction row both have it.
+export interface ResultSource {
+  provider: string;
+  model: string;
+  prompt_version: string;
+}
+
+// From a list row, which carries the columns of the joined extraction.
+export function sourceOfListRow(row: {
+  result_provider: string | null;
+  result_model: string | null;
+  result_prompt_version: string | null;
+}): ResultSource | null {
+  return row.result_provider !== null &&
+    row.result_model !== null &&
+    row.result_prompt_version !== null
+    ? {
+        provider: row.result_provider,
+        model: row.result_model,
+        prompt_version: row.result_prompt_version,
+      }
+    : null;
+}
+
+// source: where result comes from. The values are labelled with it, so a row never shows one
+// model's numbers under another model's name.
+export function toSummary(
+  row: DocumentRow,
+  result: ExtractionResult | null,
+  source: ResultSource | null,
+): DocumentSummary {
+  // No values, no label: a stored result that could not be read shows nothing at all.
+  const shown = result === null ? null : source;
   return {
     id: row.id,
     original_name: row.original_name,
@@ -98,6 +131,11 @@ export function toSummary(row: DocumentRow, result: ExtractionResult | null): Do
     index_status: row.index_status,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    requested_provider: row.llm_provider,
+    requested_model: row.llm_model,
+    result_provider: shown?.provider ?? null,
+    result_model: shown?.model ?? null,
+    result_prompt_version: shown?.prompt_version ?? null,
     vendor_name: result?.vendor_name.value ?? null,
     total_contract_value: result?.total_contract_value.value ?? null,
     expiration_date: result?.derived.expiration_date ?? null,
@@ -119,16 +157,58 @@ function toEvent(row: EventRow): DocumentEvent {
   };
 }
 
+function toRun(extraction: ExtractionRow, latestExtractionId: string | null): RunSummary {
+  return {
+    run: extraction.run,
+    status: "completed",
+    error_code: null,
+    error_message: null,
+    provider: extraction.provider,
+    model: extraction.model,
+    prompt_version: extraction.prompt_version,
+    grounding_score: extraction.grounding_score,
+    chunk_count: extraction.chunk_count,
+    input_tokens: extraction.input_tokens,
+    output_tokens: extraction.output_tokens,
+    duration_ms: extraction.duration_ms,
+    created_at: extraction.created_at,
+    latest: extraction.id === latestExtractionId,
+  };
+}
+
+function toFailedRun(failed: FailedRunRow): RunSummary {
+  return {
+    run: failed.run,
+    status: "failed",
+    error_code: failed.error_code,
+    error_message: failed.error_message,
+    provider: failed.provider,
+    model: failed.model,
+    prompt_version: failed.prompt_version,
+    grounding_score: null,
+    chunk_count: null,
+    input_tokens: null,
+    output_tokens: null,
+    duration_ms: null,
+    created_at: failed.created_at,
+    latest: false,
+  };
+}
+
 export function toDetail(
   row: DocumentRow,
+  // The extraction to show: the latest one, or the run that was asked for.
   extraction: ExtractionRow | undefined,
+  // Every run of the document that produced an extraction, and every one that failed.
+  runs: ExtractionRow[],
+  failedRuns: FailedRunRow[],
   events: EventRow[],
   log: FastifyBaseLogger,
   ctx: ReadContext,
 ): DocumentDetail {
   const result = extraction ? readStoredResult(extraction.result_json, row.id, log, ctx) : null;
   return {
-    ...toSummary(row, result),
+    ...toSummary(row, result, extraction ?? null),
     mime: row.mime,
     size_bytes: row.size_bytes,
     attempts: row.attempts,
@@ -147,6 +227,11 @@ export function toDetail(
             created_at: extraction.created_at,
           }
         : null,
+    // Newest run first. A run number is in one of the two lists only.
+    runs: [
+      ...runs.map((run) => toRun(run, row.latest_extraction_id)),
+      ...failedRuns.map(toFailedRun),
+    ].sort((a, b) => b.run - a.run || b.created_at.localeCompare(a.created_at)),
     events: events.map(toEvent),
   };
 }

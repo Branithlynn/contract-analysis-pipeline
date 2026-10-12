@@ -62,6 +62,15 @@ describe("openMemoryDb", () => {
   });
 });
 
+// What the migrations after version 1 add to a document, all empty on a row that was there before.
+const NEW_DOCUMENT_COLUMNS = {
+  index_status: null,
+  index_error: null,
+  llm_provider: null,
+  llm_model: null,
+  fallback_needs_review: null,
+};
+
 // Migration 2 drops and re-adds documents.stage. This runs it the way a dev database meets it: a
 // file on disk in WAL mode, in the version 1 schema, with documents in every status and stage.
 describe("migration 2 on a version 1 database file", () => {
@@ -140,7 +149,7 @@ describe("migration 2 on a version 1 database file", () => {
       // Compared as objects, so the stage column moving to the end does not matter. Every old
       // column has its old value, the two new ones are null.
       expect(all("documents", "id")).toEqual(
-        before.documents.map((row) => ({ ...row, index_status: null, index_error: null })),
+        before.documents.map((row) => ({ ...row, ...NEW_DOCUMENT_COLUMNS })),
       );
       expect(all("extractions", "id")).toEqual(before.extractions);
       expect(all("processing_events", "id")).toEqual(before.events);
@@ -188,7 +197,7 @@ describe("migration 2 on a version 1 database file", () => {
     ).toBeUndefined();
     expect(migrate(db)).toEqual(MIGRATIONS.filter((m) => m.version > 1).map((m) => m.version));
     expect(all("documents", "id")).toEqual(
-      before.map((row) => ({ ...row, index_status: null, index_error: null })),
+      before.map((row) => ({ ...row, ...NEW_DOCUMENT_COLUMNS })),
     );
   });
 });
@@ -287,6 +296,60 @@ describe("migration 3 on a version 2 database with chunks", () => {
         )
         .run(),
     ).toBeDefined();
+  });
+});
+
+describe("migration 4: model per document run", () => {
+  it("leaves existing documents without a model and only takes a provider it knows", () => {
+    const db = openMemoryDb();
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((m) => m.version <= 3),
+      );
+      insertDocument(db, "old", { status: "completed" });
+
+      expect(migrate(db)).toEqual(MIGRATIONS.filter((m) => m.version > 3).map((m) => m.version));
+
+      expect(db.prepare("SELECT llm_provider, llm_model FROM documents").get()).toEqual({
+        llm_provider: null,
+        llm_model: null,
+      });
+      insertDocument(db, "new", { llm_provider: "openai", llm_model: "gpt-5-mini" });
+      expect(() => insertDocument(db, "bad", { llm_provider: "gemini" })).toThrow(/CHECK/);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("migration 5: failed runs", () => {
+  it("adds the fallback column empty and a failed_runs table that takes one row per run", () => {
+    const db = openMemoryDb();
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((m) => m.version <= 4),
+      );
+      insertDocument(db, "old", { status: "completed" });
+
+      expect(migrate(db)).toEqual([5]);
+
+      expect(db.prepare("SELECT fallback_needs_review AS f FROM documents").get()).toEqual({
+        f: null,
+      });
+      expect(() => insertDocument(db, "bad", { fallback_needs_review: 2 })).toThrow(/CHECK/);
+      const insert = db.prepare(
+        `INSERT INTO failed_runs
+           (document_id, run, provider, model, prompt_version, error_code, error_message, created_at)
+         VALUES (?, ?, 'mock', 'mock', 'extract.v3', 'LLM_AUTH', 'bad key', ?)`,
+      );
+      insert.run("old", 2, NOW);
+      expect(() => insert.run("old", 2, NOW)).toThrow(/UNIQUE/);
+      expect(() => insert.run("missing", 1, NOW)).toThrow(/FOREIGN KEY/);
+    } finally {
+      db.close();
+    }
   });
 });
 

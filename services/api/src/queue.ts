@@ -1,13 +1,22 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
-import { ExtractJobPayload, QUEUE_NAME, jobIdFor, type Logger } from "@nexus/shared/node";
+import {
+  ExtractJobPayload,
+  QUEUE_NAMES,
+  jobIdFor,
+  queueKindFor,
+  type Logger,
+  type ModelSelection,
+  type QueueKind,
+} from "@nexus/shared/node";
 
 const SEVEN_DAYS_S = 7 * 24 * 60 * 60;
 const PING_TIMEOUT_MS = 1000;
 const COMMAND_TIMEOUT_MS = 2000;
 
 export interface JobQueue {
-  enqueue(documentId: string, run: number): Promise<void>;
+  // The model decides which queue the job goes on, and travels in the payload.
+  enqueue(documentId: string, run: number, model: ModelSelection): Promise<void>;
   // Rejects when redis does not answer within the timeout, so the caller can log why.
   ping(): Promise<void>;
   // Synchronous connection check, so a caller can skip work instead of failing every enqueue.
@@ -17,10 +26,13 @@ export interface JobQueue {
   close(): Promise<void>;
 }
 
+type ExtractQueue = Queue<ExtractJobPayload, void, "extract">;
+
 export class BullMqJobQueue implements JobQueue {
   // We own the connection: bullmq leaves caller supplied clients open on close(), and ping needs a client anyway.
   private readonly redis: Redis;
-  private readonly queue: Queue<ExtractJobPayload, void, "extract">;
+  // Ollama jobs on one queue, everything else on the other, see QUEUE_NAMES.
+  private readonly queues: Record<QueueKind, ExtractQueue>;
 
   constructor(
     redisUrl: string,
@@ -36,24 +48,28 @@ export class BullMqJobQueue implements JobQueue {
       enableOfflineQueue: false,
       commandTimeout: COMMAND_TIMEOUT_MS,
     });
-    this.queue = new Queue(QUEUE_NAME, {
-      connection: this.redis,
-      ...(prefix === undefined ? {} : { prefix }),
-    });
-    // bullmq re-emits the client's connection errors here and prints them to the console if nobody listens.
-    this.queue.on("error", (err) => {
-      logger.warn({ err }, "redis connection error");
-    });
+    const open = (kind: QueueKind): ExtractQueue => {
+      const queue: ExtractQueue = new Queue(QUEUE_NAMES[kind], {
+        connection: this.redis,
+        ...(prefix === undefined ? {} : { prefix }),
+      });
+      // bullmq re-emits the client's connection errors here and prints them to the console if nobody listens.
+      queue.on("error", (err) => {
+        logger.warn({ queue: kind, err }, "redis connection error");
+      });
+      return queue;
+    };
+    this.queues = { local: open("local"), hosted: open("hosted") };
   }
 
-  async enqueue(documentId: string, run: number): Promise<void> {
-    const payload = ExtractJobPayload.parse({ documentId, run });
+  async enqueue(documentId: string, run: number, model: ModelSelection): Promise<void> {
+    const payload = ExtractJobPayload.parse({ documentId, run, ...model });
     // add() waits for the connection to be ready, which with redis down is forever, so offline queue and
     // commandTimeout never get a say. Checking first also covers redis dropping after it was up.
     if (!this.isReady()) {
       throw new Error(`redis is not ready (status ${this.redis.status})`);
     }
-    await this.queue.add("extract", payload, {
+    await this.queues[queueKindFor(model.provider)].add("extract", payload, {
       jobId: jobIdFor(payload.documentId, payload.run),
       attempts: this.attempts,
       backoff: { type: "exponential", delay: this.backoffDelayMs },
@@ -88,7 +104,7 @@ export class BullMqJobQueue implements JobQueue {
   }
 
   async close(): Promise<void> {
-    await this.queue.close();
+    await Promise.all([this.queues.local.close(), this.queues.hosted.close()]);
     await this.redis.quit();
   }
 }

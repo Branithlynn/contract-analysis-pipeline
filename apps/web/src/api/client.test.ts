@@ -22,6 +22,11 @@ const summary: DocumentSummary = {
   error_message: null,
   duplicate_of: null,
   index_status: null,
+  requested_provider: null,
+  requested_model: null,
+  result_provider: null,
+  result_model: null,
+  result_prompt_version: null,
   created_at: NOW,
   updated_at: NOW,
   vendor_name: null,
@@ -41,6 +46,7 @@ const detail: DocumentDetail = {
   attempts: 0,
   run: 2,
   extraction: null,
+  runs: [],
   events: [
     {
       stage: "enqueue",

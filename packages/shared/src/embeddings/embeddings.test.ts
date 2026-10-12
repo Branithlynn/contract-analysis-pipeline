@@ -308,7 +308,7 @@ describe("openai embedder", () => {
       }),
     );
     const embedder = createOpenAIEmbedder({
-      apiKey: "sk-test",
+      apiKey: "test-openai-key",
       model: "text-embedding-3-small",
       client: { embeddings: { create } },
     });
@@ -328,7 +328,7 @@ describe("openai embedder", () => {
   it("maps sdk errors to LlmError kinds", async () => {
     const failing = (err: Error) =>
       createOpenAIEmbedder({
-        apiKey: "sk-test",
+        apiKey: "test-openai-key",
         model: "m",
         client: { embeddings: { create: () => Promise.reject(err) } },
       });
@@ -351,7 +351,7 @@ describe("openai embedder", () => {
 
   it("rejects a reply with a vector missing", async () => {
     const embedder = createOpenAIEmbedder({
-      apiKey: "sk-test",
+      apiKey: "test-openai-key",
       model: "m",
       client: {
         embeddings: { create: () => Promise.resolve({ data: [{ index: 0, embedding: [1] }] }) },
@@ -371,7 +371,7 @@ describe("createEmbedder", () => {
     await ollama.close?.();
 
     expect(
-      createEmbedder(loadConfig({ EMBED_PROVIDER: "openai", OPENAI_API_KEY: "sk-test" })),
+      createEmbedder(loadConfig({ EMBED_PROVIDER: "openai", OPENAI_API_KEY: "test-openai-key" })),
     ).toMatchObject({ name: "openai", model: "text-embedding-3-small" });
     expect(createEmbedder(loadConfig({ EMBED_PROVIDER: "mock" }))).toMatchObject({
       name: "mock",

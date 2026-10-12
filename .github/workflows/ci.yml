@@ -25,6 +25,7 @@ jobs:
       # The mock keeps ci fast, free and deterministic. Model quality is measured with the eval
       # harness against real providers, not here.
       LLM_PROVIDER: mock
+      ALLOW_MOCK: "true"
       EMBED_PROVIDER: mock
       # With this set the e2e test fails instead of skipping when redis is not reachable.
       CI: "true"

@@ -3,14 +3,15 @@ import {
   createEmbedder,
   createLogger,
   createShutdown,
+  defaultModelSelection,
   loadConfig,
   openDb,
-  QUEUE_NAME,
+  QUEUE_NAMES,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "./deps.js";
-import { createProvider } from "./llm/factory.js";
+import { createProviderRegistry } from "./llm/factory.js";
 import { undiciVersions } from "./llm/ollama.js";
-import { createWorker } from "./worker.js";
+import { createWorkers } from "./worker.js";
 
 const config = loadConfig();
 const logger = createLogger("worker", config.LOG_LEVEL);
@@ -20,26 +21,27 @@ try {
   // Only the api migrates. Starting on an old schema would fail later on some query, so fail here.
   assertMigrated(db);
 
-  const provider = createProvider(config);
+  // Providers are built per job from what the job asks for, not once here.
+  const providers = createProviderRegistry(config);
   const embedder = createEmbedder(config);
-  const deps: WorkerDeps = { db, config, logger, provider, embedder, clock: () => new Date() };
+  const deps: WorkerDeps = { db, config, logger, providers, embedder, clock: () => new Date() };
   // close() lets active jobs finish, which can take as long as one llm call.
   // docker compose stop_grace_period has to be longer than this (6m with the defaults), or SIGKILL
   // arrives before active jobs finish.
   const shutdownTimeoutMs = config.LLM_TIMEOUT_MS + 30_000;
 
-  const worker = createWorker(config, deps);
+  const workers = createWorkers(config, deps);
   logger.info(
     {
-      queue: QUEUE_NAME,
-      concurrency: worker.opts.concurrency,
-      provider: provider.name,
-      model: provider.model,
+      queues: QUEUE_NAMES,
+      localConcurrency: workers.local.opts.concurrency,
+      hostedConcurrency: workers.hosted.opts.concurrency,
+      defaultModel: defaultModelSelection(config),
       embedProvider: embedder.name,
       embedModel: embedder.model,
       // The three timeouts depend on each other, so a wrong setting should show up here at startup.
       llmTimeoutMs: config.LLM_TIMEOUT_MS,
-      lockDurationMs: worker.opts.lockDuration,
+      lockDurationMs: workers.local.opts.lockDuration,
       shutdownTimeoutMs,
       undici: undiciVersions(),
     },
@@ -51,9 +53,10 @@ try {
     exit: (code) => process.exit(code),
     forceAfterMs: shutdownTimeoutMs,
     steps: [
-      ["worker", () => worker.close()],
-      // After the worker, so no call is still using the connection pool.
-      ["llm", async () => provider.close?.()],
+      // Together: each waits for its own active jobs, and the force timeout covers both.
+      ["workers", () => Promise.all([workers.local.close(), workers.hosted.close()])],
+      // After the workers, so no call is still using a connection pool.
+      ["llm", () => providers.close()],
       ["embedder", async () => embedder.close?.()],
       [
         "db",

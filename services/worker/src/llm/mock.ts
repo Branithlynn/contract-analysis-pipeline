@@ -28,10 +28,13 @@ export const MOCK_EXTRACTION: LlmExtraction = {
 // For unit tests, CI and LLM_PROVIDER=mock: runs the whole pipeline without a model or network.
 export class MockProvider implements LlmProvider {
   readonly name = "mock";
-  readonly model = "mock";
   readonly calls: LlmRequest[] = [];
 
-  constructor(private readonly responder: MockResponder = () => MOCK_EXTRACTION) {}
+  constructor(
+    private readonly responder: MockResponder = () => MOCK_EXTRACTION,
+    // One of MOCK_MODELS when a job picked it. The answer is the same for all of them.
+    readonly model: string = "mock",
+  ) {}
 
   async complete(req: LlmRequest): Promise<LlmResponse> {
     this.calls.push(req);

@@ -20,7 +20,7 @@ import { decideNeedsReview } from "../extraction/review.js";
 import { summarizeExtraction } from "../extraction/summarize.js";
 import { concurrencyFor } from "../llm/concurrency.js";
 import { extractPrompt } from "../llm/prompts/extract.js";
-import type { LlmCallInfo, LlmUsage } from "../llm/types.js";
+import type { LlmCallInfo, LlmProvider, LlmUsage } from "../llm/types.js";
 import { parseDocument, type ParsedDocument } from "../parse/index.js";
 import { PermanentError } from "./errors.js";
 
@@ -32,7 +32,10 @@ export interface AnalyzeInput {
 }
 
 // No db or queue: processJob owns those, and the eval script calls this directly without either.
-export type AnalyzeDeps = Pick<WorkerDeps, "config" | "logger" | "provider" | "clock">;
+export type AnalyzeDeps = Pick<WorkerDeps, "config" | "logger" | "clock"> & {
+  // The model for this document. processJob takes it from the job, the eval from its flags.
+  provider: LlmProvider;
+};
 
 export type StageRunner = <T>(stage: Stage, fn: () => Promise<T>) => Promise<T>;
 

@@ -1,6 +1,6 @@
 import type { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { QUEUE_NAME, createLogger, jobIdFor } from "@nexus/shared/node";
+import { QUEUE_NAMES, createLogger, jobIdFor } from "@nexus/shared/node";
 import { BullMqJobQueue } from "./queue.js";
 
 // No redis in unit tests. The fakes stand in for the two clients, so what is tested here is our
@@ -65,6 +65,8 @@ interface FakeQueue extends EventEmitter {
 }
 
 const ID = "00000000-0000-4000-8000-000000000001";
+const MOCK = { provider: "mock", model: "mock" } as const;
+const OLLAMA = { provider: "ollama", model: "qwen2.5:7b-instruct" } as const;
 
 function setup() {
   const lines: Record<string, unknown>[] = [];
@@ -73,8 +75,9 @@ function setup() {
   };
   const queue = new BullMqJobQueue("redis://example:6379", 3, createLogger("api", "debug", stream));
   const redis = fakes.redis.at(-1) as FakeRedis;
-  const bull = fakes.queues.at(-1) as FakeQueue;
-  return { queue, redis, bull, lines };
+  // Created in this order: the queue for ollama jobs, then the one for everything else.
+  const [local, hosted] = fakes.queues.slice(-2) as [FakeQueue, FakeQueue];
+  return { queue, redis, local, hosted, bull: hosted, lines };
 }
 
 afterEach(() => {
@@ -86,30 +89,37 @@ afterEach(() => {
 
 describe("BullMqJobQueue", () => {
   it("opens a fail fast connection and hands the same one to bullmq", () => {
-    const { redis, bull } = setup();
+    const { redis, local, hosted } = setup();
 
     expect(redis.url).toBe("redis://example:6379");
     expect(redis.options).toEqual({ enableOfflineQueue: false, commandTimeout: 2000 });
-    expect(bull.name).toBe(QUEUE_NAME);
-    expect(bull.options.connection).toBe(redis);
-    expect(bull.options).not.toHaveProperty("prefix");
+    expect(fakes.queues).toHaveLength(2);
+    expect([local.name, hosted.name]).toEqual([QUEUE_NAMES.local, QUEUE_NAMES.hosted]);
+    expect(local.name).not.toBe(hosted.name);
+    for (const bull of [local, hosted]) {
+      expect(bull.options.connection).toBe(redis);
+      expect(bull.options).not.toHaveProperty("prefix");
+    }
   });
 
   it("passes a key prefix on to bullmq when it is given one", () => {
     new BullMqJobQueue("redis://example:6379", 3, createLogger("api", "silent"), 100, "nexus-e2e");
 
-    expect(fakes.queues.at(-1)).toMatchObject({ options: { prefix: "nexus-e2e" } });
+    expect(fakes.queues.slice(-2)).toMatchObject([
+      { options: { prefix: "nexus-e2e" } },
+      { options: { prefix: "nexus-e2e" } },
+    ]);
   });
 
   it("adds the job under the document and run id, with the retry and cleanup options", async () => {
     const { queue, bull } = setup();
 
-    await queue.enqueue(ID, 2);
+    await queue.enqueue(ID, 2, MOCK);
 
     expect(bull.add.mock.calls).toEqual([
       [
         "extract",
-        { documentId: ID, run: 2 },
+        { documentId: ID, run: 2, provider: "mock", model: "mock" },
         {
           jobId: jobIdFor(ID, 2),
           attempts: 3,
@@ -126,15 +136,18 @@ describe("BullMqJobQueue", () => {
     redis.status = "reconnecting";
 
     expect(queue.isReady()).toBe(false);
-    await expect(queue.enqueue(ID, 1)).rejects.toThrow("redis is not ready (status reconnecting)");
+    await expect(queue.enqueue(ID, 1, MOCK)).rejects.toThrow(
+      "redis is not ready (status reconnecting)",
+    );
     expect(bull.add).not.toHaveBeenCalled();
   });
 
   it("rejects a payload that is not a valid job before touching the queue", async () => {
     const { queue, bull } = setup();
 
-    await expect(queue.enqueue("not-a-uuid", 1)).rejects.toThrow();
-    await expect(queue.enqueue(ID, 0)).rejects.toThrow();
+    await expect(queue.enqueue("not-a-uuid", 1, MOCK)).rejects.toThrow();
+    await expect(queue.enqueue(ID, 0, MOCK)).rejects.toThrow();
+    await expect(queue.enqueue(ID, 1, { provider: "mock", model: "" })).rejects.toThrow();
     expect(bull.add).not.toHaveBeenCalled();
   });
 
@@ -196,11 +209,39 @@ describe("BullMqJobQueue", () => {
     ]);
   });
 
-  it("closes the queue before the connection it runs on", async () => {
+  it("closes both queues before the connection they run on", async () => {
     const { queue } = setup();
 
     await queue.close();
 
-    expect(fakes.closed).toEqual(["queue", "redis"]);
+    expect(fakes.closed).toEqual(["queue", "queue", "redis"]);
+  });
+
+  it("puts an ollama job on the local queue and nothing on the hosted one", async () => {
+    const { queue, local, hosted } = setup();
+
+    await queue.enqueue(ID, 1, OLLAMA);
+
+    expect(local.add).toHaveBeenCalledTimes(1);
+    expect(local.add.mock.calls[0]?.[1]).toEqual({
+      documentId: ID,
+      run: 1,
+      provider: "ollama",
+      model: "qwen2.5:7b-instruct",
+    });
+    expect(hosted.add).not.toHaveBeenCalled();
+  });
+
+  it("puts openai, anthropic and mock jobs on the hosted queue", async () => {
+    const { queue, local, hosted } = setup();
+
+    await queue.enqueue(ID, 1, { provider: "openai", model: "gpt-5-mini" });
+    await queue.enqueue(ID, 2, { provider: "anthropic", model: "claude-sonnet-5-5" });
+    await queue.enqueue(ID, 3, MOCK);
+
+    expect(hosted.add.mock.calls.map((call) => (call[1] as { provider: string }).provider)).toEqual(
+      ["openai", "anthropic", "mock"],
+    );
+    expect(local.add).not.toHaveBeenCalled();
   });
 });

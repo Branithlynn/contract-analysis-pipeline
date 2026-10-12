@@ -151,6 +151,46 @@ export const MIGRATIONS: readonly Migration[] = [
       INSERT INTO retrieval_chunks_fts (retrieval_chunks_fts) VALUES ('rebuild');
     `,
   },
+  {
+    version: 4,
+    name: "model per document run",
+    sql: `
+      -- The model the current run was asked to use. NULL on documents from before a model
+      -- could be chosen: they run with LLM_PROVIDER / LLM_MODEL. What a finished run really
+      -- used is on its extraction row, which had provider and model from the start.
+      ALTER TABLE documents ADD COLUMN llm_provider TEXT
+        CHECK (llm_provider IN ('ollama', 'anthropic', 'openai', 'mock'));
+      ALTER TABLE documents ADD COLUMN llm_model TEXT;
+      -- Dedupe asks for a finished analysis of the same file by the same model and prompt.
+      CREATE INDEX idx_extractions_model ON extractions (provider, model, prompt_version);
+    `,
+  },
+  {
+    version: 5,
+    name: "failed runs, and a completed document survives a failed reanalysis",
+    sql: `
+      -- Set while a reanalysis of a completed document is queued or running: the needs_review
+      -- the document had. If that run fails the document goes back to completed with this
+      -- value and keeps its extraction. NULL for every other run, which fails the document.
+      ALTER TABLE documents ADD COLUMN fallback_needs_review INTEGER
+        CHECK (fallback_needs_review IN (0, 1));
+
+      -- A run that ended without an extraction. The extractions table only knows the runs that
+      -- worked, and the document row only the last error.
+      CREATE TABLE failed_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id TEXT NOT NULL REFERENCES documents (id),
+        run INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        error_code TEXT NOT NULL,
+        error_message TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (document_id, run)
+      );
+    `,
+  },
 ];
 
 export const LATEST_VERSION = Math.max(0, ...MIGRATIONS.map((m) => m.version));

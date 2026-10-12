@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LlmProviderName, ModelSelectionSchema } from "../providers.js";
 import { DocumentStatus, ErrorCode, IndexStatus, Stage } from "../status.js";
 import { ExtractionResultSchema, Severity, StrictMoney } from "./extraction.js";
 
@@ -28,6 +29,16 @@ export const DocumentSummarySchema = z.object({
   index_status: IndexStatusSchema.nullable(),
   created_at: Timestamp,
   updated_at: Timestamp,
+  // The model the document's newest run was asked to use, whether that run worked or not.
+  // Null on documents from before a model could be chosen, which ran with the default.
+  requested_provider: LlmProviderName.nullable(),
+  requested_model: z.string().nullable(),
+  // The model and prompt that produced the values below. Not always the requested one: after
+  // a run that failed, a completed document still shows the result of the run before it.
+  // Null when there are no values.
+  result_provider: z.string().nullable(),
+  result_model: z.string().nullable(),
+  result_prompt_version: z.string().nullable(),
   // Everything below comes from the extraction, so it is null until one exists.
   vendor_name: z.string().nullable(),
   total_contract_value: StrictMoney.nullable(),
@@ -68,6 +79,29 @@ export const ExtractionRecordSchema = z.object({
 });
 export type ExtractionRecord = z.infer<typeof ExtractionRecordSchema>;
 
+// One finished run of a document: which model and prompt it used, and how it ended.
+export const RunSummarySchema = z.object({
+  run: z.int().min(1),
+  // completed: the run produced an extraction. failed: it ended without one.
+  status: z.enum(["completed", "failed"]),
+  // Why a failed run failed. Null for a completed one.
+  error_code: ErrorCodeSchema.nullable(),
+  error_message: z.string().nullable(),
+  provider: z.string(),
+  model: z.string(),
+  prompt_version: z.string(),
+  // The numbers of the extraction, all null for a failed run.
+  grounding_score: z.number().min(0).max(1).nullable(),
+  chunk_count: z.int().min(1).nullable(),
+  input_tokens: NonNegInt.nullable(),
+  output_tokens: NonNegInt.nullable(),
+  duration_ms: NonNegInt.nullable(),
+  created_at: Timestamp,
+  // The run the document's own values come from.
+  latest: z.boolean(),
+});
+export type RunSummary = z.infer<typeof RunSummarySchema>;
+
 export const DocumentDetailSchema = DocumentSummarySchema.extend({
   mime: z.string(),
   size_bytes: NonNegInt,
@@ -75,6 +109,10 @@ export const DocumentDetailSchema = DocumentSummarySchema.extend({
   // Starts at 1 and each retry bumps it. Job ids are "<docId>_<run>", so the worker can drop stale jobs.
   run: z.int().min(1),
   extraction: ExtractionRecordSchema.nullable(),
+  // Every finished run, newest first, so results of different models can be compared. A failed
+  // run is listed with its error. After a failed retry or reanalysis a completed document is
+  // still completed and its values are from the newest completed run, the one marked latest.
+  runs: z.array(RunSummarySchema),
   events: z.array(DocumentEventSchema),
 });
 export type DocumentDetail = z.infer<typeof DocumentDetailSchema>;
@@ -129,6 +167,24 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 
 export const SearchResponseSchema = z.array(SearchHitSchema);
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
+
+// One provider in GET /api/models. Never carries a key or a part of one.
+export const ProviderAvailabilitySchema = z.object({
+  provider: LlmProviderName,
+  available: z.boolean(),
+  // Why it cannot be used, e.g. "OPENAI_API_KEY is not set". Null when available.
+  reason: z.string().nullable(),
+  // What can be selected: installed chat models for ollama, the allowlist for hosted providers.
+  models: z.array(z.string()),
+});
+export type ProviderAvailability = z.infer<typeof ProviderAvailabilitySchema>;
+
+export const ModelsResponseSchema = z.object({
+  // What a request without provider and model gets.
+  default: ModelSelectionSchema,
+  providers: z.array(ProviderAvailabilitySchema),
+});
+export type ModelsResponse = z.infer<typeof ModelsResponseSchema>;
 
 export const ErrorBodySchema = z.object({
   error: z.object({

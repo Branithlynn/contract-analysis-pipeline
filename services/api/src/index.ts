@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   createEmbedder,
   createLogger,
+  defaultModelSelection,
   createShutdown,
   LATEST_VERSION,
   loadConfig,
@@ -12,6 +13,7 @@ import {
 import { BullMqJobQueue } from "./queue.js";
 import { startReconciler } from "./reconciler.js";
 import { buildServer } from "./server.js";
+import { createModelCatalog } from "./services/models.js";
 
 const config = loadConfig();
 const logger = createLogger("api", config.LOG_LEVEL);
@@ -36,10 +38,17 @@ try {
   const queue = new BullMqJobQueue(config.REDIS_URL, config.JOB_ATTEMPTS, logger);
   const clock = () => new Date();
   const embedder = createEmbedder(config);
-  const app = await buildServer({ db, queue, config, logger, embedder, clock });
+  const models = createModelCatalog({ config, logger });
+  const app = await buildServer({ db, queue, config, logger, embedder, models, clock });
   await app.listen({ host: "0.0.0.0", port: config.API_PORT });
 
-  const reconciler = startReconciler({ db, queue, logger, clock });
+  const reconciler = startReconciler({
+    db,
+    queue,
+    logger,
+    clock,
+    defaultModel: defaultModelSelection(config),
+  });
 
   const shutdown = createShutdown({
     logger,
@@ -51,6 +60,7 @@ try {
       ["queue", () => queue.close()],
       // After http, so no search request is still waiting on it.
       ["embedder", async () => embedder.close?.()],
+      ["models", () => models.close()],
       ["db", () => db.close()],
     ],
   });

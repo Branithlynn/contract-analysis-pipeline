@@ -6,6 +6,7 @@ import {
   openMemoryDb,
   transitionStatus,
   type Db,
+  type ModelSelection,
 } from "@nexus/shared/node";
 import type { JobQueue } from "./queue.js";
 import { startReconciler } from "./reconciler.js";
@@ -46,13 +47,18 @@ function addDoc(n: number, updatedAt: Date) {
 
 const ago = (ms: number) => new Date(NOW.getTime() - ms);
 
+const DEFAULT_MODEL: ModelSelection = { provider: "ollama", model: "qwen2.5:7b-instruct" };
+
 function fakeQueue(failFor: string[] = [], { ready = true } = {}) {
   const calls: [string, number][] = [];
+  // The model each enqueue was given, in the same order as calls.
+  const models: ModelSelection[] = [];
   const state = { ready };
   const listeners = new Set<() => void>();
   const queue: JobQueue = {
-    enqueue: (documentId, run) => {
+    enqueue: (documentId, run, model) => {
       calls.push([documentId, run]);
+      models.push(model);
       return failFor.includes(documentId)
         ? Promise.reject(new Error("enqueue failed"))
         : Promise.resolve();
@@ -70,7 +76,7 @@ function fakeQueue(failFor: string[] = [], { ready = true } = {}) {
     state.ready = true;
     for (const listener of listeners) listener();
   };
-  return { queue, calls, state, becomeReady, listeners };
+  return { queue, calls, models, state, becomeReady, listeners };
 }
 
 function capture() {
@@ -96,7 +102,13 @@ describe("startReconciler", () => {
 
     const { queue, calls } = fakeQueue();
     const { logger, lines } = capture();
-    const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+    const reconciler = startReconciler({
+      defaultModel: DEFAULT_MODEL,
+      db,
+      queue,
+      logger,
+      clock: () => NOW,
+    });
     await vi.waitFor(() => expect(lines.some((l) => l.msg === "reconciler pass")).toBe(true));
     reconciler.stop();
 
@@ -112,12 +124,42 @@ describe("startReconciler", () => {
     });
   });
 
+  it("re-enqueues a row with the model it was asked to use, or the default for a row without one", async () => {
+    addDoc(1, ago(5 * 60_000));
+    addDoc(2, ago(4 * 60_000));
+    db.prepare(
+      "UPDATE documents SET llm_provider = 'openai', llm_model = 'gpt-5-mini' WHERE id = ?",
+    ).run(id(2));
+    const { queue, calls, models } = fakeQueue();
+    const { logger, lines } = capture();
+
+    const reconciler = startReconciler({
+      defaultModel: DEFAULT_MODEL,
+      db,
+      queue,
+      logger,
+      clock: () => NOW,
+    });
+    await vi.waitFor(() => expect(lines.some((l) => l.msg === "reconciler pass")).toBe(true));
+    reconciler.stop();
+
+    expect(calls.map(([documentId]) => documentId)).toEqual([id(1), id(2)]);
+    // The model decides the queue, so a hosted document never lands behind the ollama ones.
+    expect(models).toEqual([DEFAULT_MODEL, { provider: "openai", model: "gpt-5-mini" }]);
+  });
+
   it("counts failures, keeps going and never throws", async () => {
     addDoc(1, ago(5 * 60_000));
     addDoc(2, ago(4 * 60_000));
     const { queue, calls } = fakeQueue([id(1)]);
     const { logger } = capture();
-    const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+    const reconciler = startReconciler({
+      defaultModel: DEFAULT_MODEL,
+      db,
+      queue,
+      logger,
+      clock: () => NOW,
+    });
     reconciler.stop();
 
     await expect(reconciler.runOnce()).resolves.toEqual({ stale: 2, enqueued: 1, failed: 1 });
@@ -127,7 +169,13 @@ describe("startReconciler", () => {
   it("logs and swallows an error from the database", async () => {
     const { queue } = fakeQueue();
     const { logger, lines } = capture();
-    const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+    const reconciler = startReconciler({
+      defaultModel: DEFAULT_MODEL,
+      db,
+      queue,
+      logger,
+      clock: () => NOW,
+    });
     reconciler.stop();
     await vi.waitFor(() => expect(lines.length).toBeGreaterThan(0));
     db.close();
@@ -142,7 +190,14 @@ describe("startReconciler", () => {
     const { logger, lines } = capture();
     const passes = () => lines.filter((l) => l.msg === "reconciler pass").length;
 
-    const reconciler = startReconciler({ db, queue, logger, clock: () => NOW, intervalMs: 1000 });
+    const reconciler = startReconciler({
+      defaultModel: DEFAULT_MODEL,
+      db,
+      queue,
+      logger,
+      clock: () => NOW,
+      intervalMs: 1000,
+    });
     await vi.waitFor(() => expect(passes()).toBe(1));
     await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(passes()).toBe(2));
@@ -157,7 +212,13 @@ describe("startReconciler", () => {
       addDoc(2, ago(4 * 60_000));
       const { queue, calls } = fakeQueue([], { ready: false });
       const { logger, lines } = capture();
-      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      const reconciler = startReconciler({
+        defaultModel: DEFAULT_MODEL,
+        db,
+        queue,
+        logger,
+        clock: () => NOW,
+      });
       reconciler.stop();
 
       await expect(reconciler.runOnce()).resolves.toBe("skipped");
@@ -173,7 +234,13 @@ describe("startReconciler", () => {
       addDoc(1, ago(5 * 60_000));
       const { queue, calls, becomeReady } = fakeQueue([], { ready: false });
       const { logger, lines } = capture();
-      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      const reconciler = startReconciler({
+        defaultModel: DEFAULT_MODEL,
+        db,
+        queue,
+        logger,
+        clock: () => NOW,
+      });
       await vi.waitFor(() =>
         expect(lines.some((l) => l.msg === "reconciler pass skipped, queue not ready")).toBe(true),
       );
@@ -186,7 +253,13 @@ describe("startReconciler", () => {
     it("stops listening for ready on stop", () => {
       const { queue, listeners } = fakeQueue([], { ready: false });
       const { logger } = capture();
-      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      const reconciler = startReconciler({
+        defaultModel: DEFAULT_MODEL,
+        db,
+        queue,
+        logger,
+        clock: () => NOW,
+      });
       expect(listeners.size).toBe(1);
 
       reconciler.stop();
@@ -199,12 +272,18 @@ describe("startReconciler", () => {
       addDoc(3, ago(3 * 60_000));
       const { queue, calls, state } = fakeQueue();
       const enqueue = queue.enqueue.bind(queue);
-      queue.enqueue = async (documentId, run) => {
-        await enqueue(documentId, run);
+      queue.enqueue = async (documentId, run, model) => {
+        await enqueue(documentId, run, model);
         state.ready = false;
       };
       const { logger, lines } = capture();
-      const reconciler = startReconciler({ db, queue, logger, clock: () => NOW });
+      const reconciler = startReconciler({
+        defaultModel: DEFAULT_MODEL,
+        db,
+        queue,
+        logger,
+        clock: () => NOW,
+      });
       reconciler.stop();
       await vi.waitFor(() =>
         expect(lines.some((l) => l.msg?.toString().startsWith("reconciler"))).toBe(true),

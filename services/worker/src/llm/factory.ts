@@ -1,4 +1,13 @@
-import type { Config, ExtractPromptVersion } from "@nexus/shared/node";
+import {
+  defaultModelSelection,
+  hostedModels,
+  LlmError,
+  MOCK_MODELS,
+  type Config,
+  type ExtractPromptVersion,
+  type HostedProvider,
+  type ModelSelection,
+} from "@nexus/shared/node";
 import { createAnthropicProvider } from "./anthropic.js";
 import { MockProvider } from "./mock.js";
 import { contextFloor, createOllamaProvider } from "./ollama.js";
@@ -7,12 +16,6 @@ import { MAX_OUTPUT_TOKENS } from "./prompts/extract.v1.js";
 import * as summary from "./prompts/summary.v1.js";
 import { createOpenAIProvider } from "./openai.js";
 import type { LlmProvider } from "./types.js";
-
-// loadConfig already rejects a missing key for the chosen provider; this only narrows the type.
-function requireKey(key: string | undefined, name: string): string {
-  if (key === undefined) throw new Error(`${name} is required for this LLM_PROVIDER`);
-  return key;
-}
 
 // Every kind of call the worker makes to ollama, so they all share one num_ctx. The extraction
 // budget is the larger one, so it decides the floor. Sized for the prompt version in use: a longer
@@ -33,26 +36,80 @@ export function ollamaContextFloor(maxInputChars: number, version: ExtractPrompt
   ]);
 }
 
-export function createProvider(config: Config): LlmProvider {
-  switch (config.LLM_PROVIDER) {
+const KEY_NAMES = { openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY" } as const;
+const LIST_NAMES = { openai: "OPENAI_MODELS", anthropic: "ANTHROPIC_MODELS" } as const;
+
+// The api checks a selection before it queues a job. The worker checks again, because a job
+// payload is input too: a key the worker itself does not have, or a model outside the allowlist,
+// must not become a request to a paid api. Both fail the same way on every attempt.
+function hostedKey(config: Config, provider: HostedProvider, model: string): string {
+  const key = config[KEY_NAMES[provider]];
+  if (key === undefined) {
+    throw new LlmError("auth", `${KEY_NAMES[provider]} is not set for the worker`);
+  }
+  if (!hostedModels(config, provider).includes(model)) {
+    throw new LlmError("invalid_request", `Model ${model} is not in ${LIST_NAMES[provider]}`);
+  }
+  return key;
+}
+
+export function createProviderFor(config: Config, selection: ModelSelection): LlmProvider {
+  const { provider, model } = selection;
+  switch (provider) {
     case "ollama":
       return createOllamaProvider({
         baseUrl: config.OLLAMA_URL,
-        model: config.LLM_MODEL,
+        model,
         numCtxFloor: ollamaContextFloor(config.LLM_MAX_INPUT_CHARS, config.PROMPT_VERSION),
         timeoutMs: config.LLM_TIMEOUT_MS,
       });
     case "anthropic":
-      return createAnthropicProvider({
-        apiKey: requireKey(config.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY"),
-        model: config.LLM_MODEL,
-      });
+      return createAnthropicProvider({ apiKey: hostedKey(config, provider, model), model });
     case "openai":
-      return createOpenAIProvider({
-        apiKey: requireKey(config.OPENAI_API_KEY, "OPENAI_API_KEY"),
-        model: config.LLM_MODEL,
-      });
+      return createOpenAIProvider({ apiKey: hostedKey(config, provider, model), model });
     case "mock":
-      return new MockProvider();
+      if (!config.ALLOW_MOCK) {
+        throw new LlmError("invalid_request", "The mock provider is off (ALLOW_MOCK is not true)");
+      }
+      if (!MOCK_MODELS.includes(model)) {
+        throw new LlmError("invalid_request", `Model ${model} is not a mock model`);
+      }
+      return new MockProvider(undefined, model);
   }
+}
+
+// The provider for LLM_PROVIDER / LLM_MODEL. What the eval and the smoke script use.
+export function createProvider(config: Config): LlmProvider {
+  return createProviderFor(config, defaultModelSelection(config));
+}
+
+export interface ProviderRegistry {
+  // Throws an LlmError when the selection cannot be used by this worker.
+  get(selection: ModelSelection): LlmProvider;
+  close(): Promise<void>;
+}
+
+// One provider object per model for the life of the worker, built when the first job asks for it.
+// The ollama one holds a connection pool, and a new pool per job would never be closed.
+export function createProviderRegistry(
+  config: Config,
+  create: (config: Config, selection: ModelSelection) => LlmProvider = createProviderFor,
+): ProviderRegistry {
+  const providers = new Map<string, LlmProvider>();
+  return {
+    get(selection) {
+      // A line break cannot be part of a model name, so two selections never share a key.
+      const key = `${selection.provider}\n${selection.model}`;
+      let provider = providers.get(key);
+      if (provider === undefined) {
+        provider = create(config, selection);
+        providers.set(key, provider);
+      }
+      return provider;
+    },
+    async close() {
+      await Promise.all([...providers.values()].map((provider) => provider.close?.()));
+      providers.clear();
+    },
+  };
 }

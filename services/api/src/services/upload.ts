@@ -8,14 +8,20 @@ import type { MultipartFile } from "@fastify/multipart";
 import type { FastifyBaseLogger } from "fastify";
 import { fileTypeFromFile } from "file-type";
 import { ErrorCode, MIME_FORMATS, type UploadResponse } from "@nexus/shared";
-import { createDocument, findCompletedBySha256, type Config, type Db } from "@nexus/shared/node";
+import {
+  createDocument,
+  findCompletedBySha256,
+  type Config,
+  type Db,
+  type ModelSelection,
+} from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
 import { enqueueOrDefer } from "./enqueue.js";
 
 export interface UploadDeps {
   db: Db;
   queue: JobQueue;
-  config: Pick<Config, "UPLOAD_DIR" | "MAX_UPLOAD_MB">;
+  config: Pick<Config, "UPLOAD_DIR" | "MAX_UPLOAD_MB" | "PROMPT_VERSION">;
 }
 
 export type AcceptedFile = UploadResponse["accepted"][number];
@@ -46,6 +52,8 @@ export async function storeUpload(
   { db, queue, config }: UploadDeps,
   part: MultipartFile,
   log: FastifyBaseLogger,
+  // The model this file is to be analyzed with, already checked by the route.
+  model: ModelSelection,
 ): Promise<UploadOutcome> {
   const id = randomUUID();
   const originalName = part.filename;
@@ -57,7 +65,19 @@ export async function storeUpload(
     const { sha256, size } = await writeHashed(part.file, tmpPath);
     const logLine = (outcome: LogOutcome, mime: string | null, extra: object = {}) => {
       const level = outcome === "queue_unavailable" ? "warn" : "info";
-      log[level]({ documentId: id, sha256, size, mime, outcome, ...extra }, "upload handled");
+      log[level](
+        {
+          documentId: id,
+          sha256,
+          size,
+          mime,
+          outcome,
+          provider: model.provider,
+          model: model.model,
+          ...extra,
+        },
+        "upload handled",
+      );
     };
     const reject = (code: ErrorCode, message: string): UploadOutcome => ({
       rejected: { original_name: originalName, code, message },
@@ -95,17 +115,23 @@ export async function storeUpload(
       storage_path: storageName,
     };
 
-    const original = findCompletedBySha256(db, sha256);
+    // The same file analyzed by the same model with the same prompt is a duplicate. With another
+    // model or prompt version it is a new analysis and goes through the queue.
+    const original = findCompletedBySha256(db, sha256, {
+      ...model,
+      promptVersion: config.PROMPT_VERSION,
+    });
     try {
       if (original) {
         createDocument(db, {
           ...row,
+          model,
           status: "completed",
           duplicate_of: original.id,
           latest_extraction_id: original.latest_extraction_id,
         });
       } else {
-        createDocument(db, { ...row, status: "queued" });
+        createDocument(db, { ...row, model, status: "queued" });
       }
     } catch (err) {
       // No row points at the file, so nothing would ever clean it up.
@@ -125,7 +151,7 @@ export async function storeUpload(
       };
     }
 
-    const enqueue = await enqueueOrDefer({ db, queue }, id, 1);
+    const enqueue = await enqueueOrDefer({ db, queue }, id, 1, model);
     if (enqueue.enqueued) logLine("queued", detected.mime);
     else logLine("queue_unavailable", detected.mime, { err: enqueue.err });
     return { accepted: { id, original_name: originalName, status: "queued", duplicate_of: null } };

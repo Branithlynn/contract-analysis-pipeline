@@ -139,7 +139,8 @@ afterAll(async () => {
 });
 
 function setup() {
-  return makeDeps({ UPLOAD_DIR: dir }).deps;
+  const { deps, provider } = makeDeps({ UPLOAD_DIR: dir });
+  return { ...deps, provider };
 }
 
 const input = (path: string) => ({ path, mime: PDF, filename: "contract.pdf" });

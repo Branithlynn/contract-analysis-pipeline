@@ -4,6 +4,7 @@ import { createLogger, loadConfig, openMemoryDb, MockEmbedder } from "@nexus/sha
 import { HttpError } from "./errors.js";
 import type { JobQueue } from "./queue.js";
 import { buildServer } from "./server.js";
+import { offlineModels } from "./test-support/fixtures.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -26,6 +27,7 @@ async function setup(env: Record<string, string> = {}) {
     config: loadConfig(env),
     logger: createLogger("api", "info", stream),
     embedder: new MockEmbedder(),
+    models: offlineModels(),
     clock: () => new Date("2026-06-01T12:00:00Z"),
   });
 

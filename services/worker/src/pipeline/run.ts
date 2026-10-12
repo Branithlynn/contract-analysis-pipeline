@@ -2,13 +2,19 @@ import { UnrecoverableError, type Job } from "bullmq";
 import { z } from "zod";
 import { ErrorCode, type IndexStatus } from "@nexus/shared";
 import {
+  defaultModelSelection,
   ExtractJobPayload,
+  failRun,
   getDocument,
   insertEvent,
   insertExtraction,
+  queueKindFor,
+  selectionOr,
   setIndexStatus,
   transitionStatus,
   type Logger,
+  type ModelSelection,
+  type QueueKind,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "../deps.js";
 import { indexDocument } from "../retrieval/index-document.js";
@@ -27,7 +33,12 @@ const STALLED_REASON = "job stalled more than allowable limit";
 
 // The worker writes status itself instead of the api listening to queue events: it knows the stage
 // and the error code, and the db stays the one source of truth.
-export async function processJob(job: ExtractJob, deps: WorkerDeps): Promise<void> {
+export async function processJob(
+  job: ExtractJob,
+  deps: WorkerDeps,
+  // The queue the job came from. Left out by callers that have no queue (tests of the pipeline).
+  queue?: QueueKind,
+): Promise<void> {
   const parsed = ExtractJobPayload.safeParse(job.data);
   if (!parsed.success) {
     deps.logger.error(
@@ -61,17 +72,40 @@ export async function processJob(job: ExtractJob, deps: WorkerDeps): Promise<voi
     return;
   }
 
+  // The job says which model. A job from before models could be chosen says nothing, then the
+  // document row does, and for rows from back then the default from the environment applies.
+  const selection = selectionOr(
+    parsed.data,
+    selectionOr(
+      { provider: doc.llm_provider, model: doc.llm_model },
+      defaultModelSelection(deps.config),
+    ),
+  );
+  log.info({ provider: selection.provider, model: selection.model, queue }, "job started");
+
   const ctx: StageContext = { deps, documentId, run };
   let result: AnalysisResult;
   try {
+    // The api routes by provider, so this never happens with our own jobs. Checked anyway: an
+    // ollama job on the hosted queue would run next to another one, which is the one thing the
+    // two queues exist to prevent.
+    if (queue !== undefined && queueKindFor(selection.provider) !== queue) {
+      throw new PermanentError(
+        ErrorCode.INTERNAL,
+        `A ${selection.provider} job arrived on the ${queue} queue`,
+      );
+    }
+    // Inside the try: a selection this worker cannot serve (no key, model not allowed) fails the
+    // document with its reason instead of crashing the job.
+    const provider = deps.providers.get(selection);
     result = await analyzeDocument(
       { path: doc.storage_path, mime: doc.mime, filename: doc.original_name },
       // The child logger, so parser debug lines carry documentId.
-      { ...deps, logger: log },
+      { config: deps.config, clock: deps.clock, logger: log, provider },
       { onStage: (stage, fn) => runStage(ctx, stage, fn) },
     );
   } catch (err) {
-    throw handleFailure(job, ctx, log, err);
+    throw handleFailure(job, ctx, log, err, selection);
   }
 
   const index = await buildIndex(ctx, log, result.parsed.text);
@@ -148,11 +182,12 @@ async function buildIndex(
 // "processing" forever: the reconciler only sweeps queued rows.
 // A no-op unless the row is still processing for this job's run, so it never overrides what
 // processJob wrote and never touches a document that has been retried since.
-// Returns true when it marked the document failed.
+// Returns true when it ended the run: the document is failed, or, when it was completed before
+// this run, completed again with its previous result.
 export function handleFinalFailure(
   job: FailedJob | undefined,
   err: Error,
-  deps: Pick<WorkerDeps, "db" | "logger">,
+  deps: Pick<WorkerDeps, "db" | "logger" | "config">,
 ): boolean {
   if (job?.finishedOn === undefined) return false;
   const payload = ExtractJobPayload.safeParse(job.data);
@@ -166,44 +201,67 @@ export function handleFinalFailure(
     : eventMessage(`job failed outside the pipeline: ${err.message}`);
 
   // Status and run are checked in the same transaction as the write, like the success path.
-  const marked = deps.db.transaction(() => {
+  const outcome = deps.db.transaction(() => {
     const doc = getDocument(deps.db, documentId);
-    if (doc?.status !== "processing" || doc.run !== run) return false;
-    const moved = transitionStatus(deps.db, documentId, "failed", {
-      from: "processing",
-      error_code: code,
-      error_message: message,
-    });
-    if (!moved) return false;
-    insertEvent(deps.db, {
-      document_id: documentId,
+    if (!doc) return "skipped" as const;
+    const result = failRun(deps.db, {
+      documentId,
       run,
-      stage: "job",
-      outcome: "error",
-      message: `${code}: ${message}`,
+      model: selectionOr(
+        payload.data,
+        selectionOr(
+          { provider: doc.llm_provider, model: doc.llm_model },
+          defaultModelSelection(deps.config),
+        ),
+      ),
+      promptVersion: deps.config.PROMPT_VERSION,
+      code,
+      message,
     });
-    return true;
+    // A kept document got its own event from failRun.
+    if (result === "failed") {
+      insertEvent(deps.db, {
+        document_id: documentId,
+        run,
+        stage: "job",
+        outcome: "error",
+        message: `${code}: ${message}`,
+      });
+    }
+    return result;
   })();
-  if (marked) {
+  if (outcome === "failed") {
     deps.logger.error({ documentId, run, jobId: job.id, code, err }, "document failed");
   }
-  return marked;
+  if (outcome === "kept_completed") {
+    deps.logger.error(
+      { documentId, run, jobId: job.id, code, err },
+      "run failed, the document keeps its previous result",
+    );
+  }
+  return outcome !== "skipped";
 }
 
 // Returns what processJob should throw: UnrecoverableError stops bullmq retrying, anything else
 // lets it schedule the next attempt.
-function handleFailure(job: ExtractJob, ctx: StageContext, log: Logger, err: unknown): unknown {
+function handleFailure(
+  job: ExtractJob,
+  ctx: StageContext,
+  log: Logger,
+  err: unknown,
+  selection: ModelSelection,
+): unknown {
   const classified = classifyError(err);
   // bullmq increments attemptsMade only after an attempt fails, so it is 0 during the first one.
   const attempt = job.attemptsMade + 1;
   const attempts = job.opts.attempts ?? 1;
 
   if (classified instanceof PermanentError) {
-    markFailed(ctx, log, classified);
+    markFailed(ctx, log, classified, selection);
     return new UnrecoverableError(`${classified.code}: ${classified.message}`);
   }
   if (attempt >= attempts) {
-    markFailed(ctx, log, classified);
+    markFailed(ctx, log, classified, selection);
     return err;
   }
 
@@ -221,12 +279,28 @@ function handleFailure(job: ExtractJob, ctx: StageContext, log: Logger, err: unk
   return err;
 }
 
-function markFailed(ctx: StageContext, log: Logger, err: ClassifiedError): void {
-  const updated = transitionStatus(ctx.deps.db, ctx.documentId, "failed", {
-    from: "processing",
-    error_code: err.code,
-    error_message: err.message,
+// The run is over without a result. What that means for the document is failRun's decision: a
+// document that was completed before this run stays completed, one that never completed fails.
+function markFailed(
+  ctx: StageContext,
+  log: Logger,
+  err: ClassifiedError,
+  selection: ModelSelection,
+): void {
+  const outcome = failRun(ctx.deps.db, {
+    documentId: ctx.documentId,
+    run: ctx.run,
+    model: selection,
+    promptVersion: ctx.deps.config.PROMPT_VERSION,
+    code: err.code,
+    message: err.message,
   });
-  if (!updated) log.warn("document left processing before it could be marked failed");
-  log.error({ code: err.code, err }, "document failed");
+  if (outcome === "skipped") {
+    log.warn("document left processing before it could be marked failed");
+  }
+  if (outcome === "kept_completed") {
+    log.error({ code: err.code, err }, "run failed, the document keeps its previous result");
+  } else {
+    log.error({ code: err.code, err }, "document failed");
+  }
 }

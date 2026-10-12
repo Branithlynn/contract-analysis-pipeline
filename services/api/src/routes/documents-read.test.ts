@@ -21,6 +21,7 @@ import {
   extractionResult as result,
   NOW,
   okQueue as queue,
+  offlineModels,
 } from "../test-support/fixtures.js";
 
 let db: Db;
@@ -79,6 +80,7 @@ async function setup(now = NOW) {
     config: loadConfig({}),
     logger: createLogger("api", "info", stream),
     embedder: new MockEmbedder(),
+    models: offlineModels(),
     clock: () => now,
   });
   return { app, lines };

@@ -7,7 +7,9 @@ import { healthRoutes } from "./health.js";
 import type { JobQueue } from "./queue.js";
 import { requestIdFrom } from "./request-id.js";
 import { documentRoutes } from "./routes/documents.js";
+import { modelRoutes } from "./routes/models.js";
 import { searchRoutes } from "./routes/search.js";
+import type { ModelCatalog } from "./services/models.js";
 
 const MB = 1024 * 1024;
 
@@ -18,12 +20,22 @@ export interface ServerDeps {
   logger: Logger;
   // Embeds search queries. The worker embeds the documents with the same provider and model.
   embedder: Embedder;
+  // Which models can be selected right now. Lists them and checks what a request asks for.
+  models: ModelCatalog;
   // Injected so tests can pin "today". Anything date dependent reads time through this.
   clock: () => Date;
 }
 
 // Returns the app without listening so tests can drive it with inject().
-export async function buildServer({ db, queue, config, logger, embedder, clock }: ServerDeps) {
+export async function buildServer({
+  db,
+  queue,
+  config,
+  logger,
+  embedder,
+  models,
+  clock,
+}: ServerDeps) {
   const app = fastify({
     loggerInstance: logger,
     genReqId: (request) => requestIdFrom(request.headers["x-request-id"]),
@@ -50,7 +62,8 @@ export async function buildServer({ db, queue, config, logger, embedder, clock }
     },
   });
   await app.register(healthRoutes, { db, queue });
-  await app.register(documentRoutes, { prefix: "/api", db, queue, config, clock });
+  await app.register(documentRoutes, { prefix: "/api", db, queue, config, models, clock });
+  await app.register(modelRoutes, { prefix: "/api", models });
   await app.register(searchRoutes, { prefix: "/api", db, embedder });
 
   return app;
