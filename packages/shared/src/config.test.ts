@@ -11,11 +11,12 @@ describe("loadConfig", () => {
     expect(config.GROUNDING_REVIEW_THRESHOLD).toBe(0.8);
   });
 
-  it("takes an extraction prompt version it knows and defaults to extract.v1", () => {
-    expect(loadConfig({}).PROMPT_VERSION).toBe("extract.v1");
+  it("takes an extraction prompt version it knows and defaults to extract.v3", () => {
+    expect(loadConfig({}).PROMPT_VERSION).toBe("extract.v3");
+    expect(loadConfig({ PROMPT_VERSION: "" }).PROMPT_VERSION).toBe("extract.v3");
+    // The older versions stay selectable, for rerunning an eval against them.
+    expect(loadConfig({ PROMPT_VERSION: "extract.v1" }).PROMPT_VERSION).toBe("extract.v1");
     expect(loadConfig({ PROMPT_VERSION: "extract.v2" }).PROMPT_VERSION).toBe("extract.v2");
-    expect(loadConfig({ PROMPT_VERSION: "extract.v3" }).PROMPT_VERSION).toBe("extract.v3");
-    expect(loadConfig({ PROMPT_VERSION: "" }).PROMPT_VERSION).toBe("extract.v1");
     expect(() => loadConfig({ PROMPT_VERSION: "extract.v9" })).toThrow("PROMPT_VERSION");
   });
 

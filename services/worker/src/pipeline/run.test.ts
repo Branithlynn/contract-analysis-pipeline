@@ -109,7 +109,7 @@ describe("processJob", () => {
       run: 1,
       provider: "mock",
       model: "mock",
-      prompt_version: "extract.v1",
+      prompt_version: "extract.v3",
       grounding_score: 0,
       chunk_count: 1,
       output_tokens: 100,

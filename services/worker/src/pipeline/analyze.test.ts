@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ExtractionResultSchema, type LlmExtraction, type Stage } from "@nexus/shared";
 import { LlmError } from "../llm/errors.js";
 import { MOCK_EXTRACTION, MockProvider } from "../llm/mock.js";
+import { extractPrompt } from "../llm/prompts/extract.js";
 import type { LlmProvider } from "../llm/types.js";
 import { makeDeps } from "../test-support/fixtures.js";
 import { makePdf } from "../test-support/pdf.js";
@@ -155,7 +156,7 @@ describe("analyzeDocument", () => {
     expect(result.meta).toMatchObject({
       provider: "mock",
       model: "mock",
-      promptVersion: "extract.v1",
+      promptVersion: "extract.v3",
       chunkCount: 1,
     });
   });
@@ -399,12 +400,16 @@ describe("analyzeDocument", () => {
     };
 
     const byDefault = await run({});
+    const v1 = await run({ PROMPT_VERSION: "extract.v1" });
     const v2 = await run({ PROMPT_VERSION: "extract.v2" });
 
-    expect(byDefault.version).toBe("extract.v1");
-    expect(byDefault.system).toContain("report clauses that create cost");
+    expect(byDefault.version).toBe("extract.v3");
+    expect(byDefault.system).toBe(extractPrompt("extract.v3").system);
+    expect(v1.version).toBe("extract.v1");
+    expect(v1.system).toBe(extractPrompt("extract.v1").system);
     expect(v2.version).toBe("extract.v2");
     expect(v2.system).toContain("report only clauses that create material cost");
+    expect(new Set([byDefault.system, v1.system, v2.system]).size).toBe(3);
   });
 
   it("runs ollama one chunk at a time and says so once when the config asked for more", async () => {

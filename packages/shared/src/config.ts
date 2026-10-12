@@ -25,8 +25,10 @@ const ConfigSchema = z
     MAX_FILES_PER_REQUEST: PositiveInt.default(DEFAULT_MAX_FILES_PER_REQUEST),
     LLM_PROVIDER: LlmProviderName.default("ollama"),
     LLM_MODEL: z.string().default("qwen2.5:7b-instruct"),
-    // Stored on every extraction, so results from different versions can be told apart.
-    PROMPT_VERSION: ExtractPromptVersion.default("extract.v1"),
+    // Stored on every extraction, so results from different versions can be told apart. v3 is the
+    // default because it won the evals on both models (see evals/results). v1 and v2 stay
+    // selectable so those runs can be repeated.
+    PROMPT_VERSION: ExtractPromptVersion.default("extract.v3"),
     OLLAMA_URL: z.url().default("http://localhost:11434"),
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),

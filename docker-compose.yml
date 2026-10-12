@@ -16,7 +16,7 @@ x-app-env: &app-env
   # the shell first, then .env, then the default. The defaults repeat the ones in config.ts.
   LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
   LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
-  PROMPT_VERSION: ${PROMPT_VERSION:-extract.v1}
+  PROMPT_VERSION: ${PROMPT_VERSION:-extract.v3}
 
 services:
   redis:
