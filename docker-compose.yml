@@ -17,6 +17,9 @@ x-app-env: &app-env
   LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
   LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
   PROMPT_VERSION: ${PROMPT_VERSION:-extract.v3}
+  EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
+  # Blank means the default model of the embed provider, see config.ts.
+  EMBED_MODEL: ${EMBED_MODEL:-}
 
 services:
   redis:
@@ -126,8 +129,15 @@ services:
       # Same interpolation as the anchor, not env_file, so the model pulled is the model the
       # worker asks for, on a fresh clone too.
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+    # The embed model is only pulled when embeddings run on ollama: with EMBED_PROVIDER=openai the
+    # name is not an ollama model, the pull would fail and the worker would never start.
     # $$ so compose leaves it alone and the shell in the container expands it.
-    entrypoint: ["sh", "-c", 'ollama pull "$$LLM_MODEL"']
+    entrypoint:
+      - sh
+      - -c
+      - 'ollama pull "$$LLM_MODEL" && { [ "$$EMBED_PROVIDER" != ollama ] || ollama pull "$$EMBED_MODEL"; }'
     depends_on:
       ollama:
         condition: service_healthy

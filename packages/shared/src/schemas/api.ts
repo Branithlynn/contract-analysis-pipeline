@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DocumentStatus, ErrorCode, Stage } from "../status.js";
+import { DocumentStatus, ErrorCode, IndexStatus, Stage } from "../status.js";
 import { ExtractionResultSchema, Severity, StrictMoney } from "./extraction.js";
 
 // Response objects are not strict: the web client parses them, and an extra field from a newer api
@@ -8,6 +8,7 @@ import { ExtractionResultSchema, Severity, StrictMoney } from "./extraction.js";
 const StatusSchema = z.enum(DocumentStatus);
 const StageSchema = z.enum(Stage);
 const ErrorCodeSchema = z.enum(ErrorCode);
+const IndexStatusSchema = z.enum(IndexStatus);
 const Timestamp = z.iso.datetime();
 const NonNegInt = z.int().nonnegative();
 
@@ -21,6 +22,10 @@ export const DocumentSummarySchema = z.object({
   error_code: ErrorCodeSchema.nullable(),
   error_message: z.string().nullable(),
   duplicate_of: z.string().nullable(),
+  // Whether search can find this document. failed: the extraction is fine, the index is not, so
+  // the document is not searchable until a backfill. Null: never indexed (not completed yet,
+  // processed before the index existed, or a duplicate, which is found through its original).
+  index_status: IndexStatusSchema.nullable(),
   created_at: Timestamp,
   updated_at: Timestamp,
   // Everything below comes from the extraction, so it is null until one exists.
@@ -94,6 +99,21 @@ export const UploadResponseSchema = z.object({
   error: z.object({ code: z.string(), message: z.string() }).optional(),
 });
 export type UploadResponse = z.infer<typeof UploadResponseSchema>;
+
+// One retrieval chunk from GET /api/search.
+export const SearchHitSchema = z.object({
+  document_id: z.string(),
+  file_name: z.string(),
+  // Null for docx, which has no fixed pages.
+  page: z.int().nullable(),
+  text: z.string(),
+  // Cosine similarity between the query and the chunk, higher is closer.
+  score: z.number(),
+});
+export type SearchHit = z.infer<typeof SearchHitSchema>;
+
+export const SearchResponseSchema = z.array(SearchHitSchema);
+export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
 export const ErrorBodySchema = z.object({
   error: z.object({

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createLogger, loadConfig, openMemoryDb } from "@nexus/shared/node";
+import { createLogger, loadConfig, openMemoryDb, MockEmbedder } from "@nexus/shared/node";
 import { HttpError } from "./errors.js";
 import type { JobQueue } from "./queue.js";
 import { buildServer } from "./server.js";
@@ -25,6 +25,7 @@ async function setup(env: Record<string, string> = {}) {
     queue: okQueue,
     config: loadConfig(env),
     logger: createLogger("api", "info", stream),
+    embedder: new MockEmbedder(),
     clock: () => new Date("2026-06-01T12:00:00Z"),
   });
 

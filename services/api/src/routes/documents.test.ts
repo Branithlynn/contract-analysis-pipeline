@@ -16,6 +16,7 @@ import {
   migrate,
   openMemoryDb,
   transitionStatus,
+  MockEmbedder,
   type Db,
 } from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
@@ -139,6 +140,7 @@ async function setup({ env = {}, failEnqueue = false } = {}) {
     queue,
     config: loadConfig({ UPLOAD_DIR: uploadDir, ...env }),
     logger: createLogger("api", "info", stream),
+    embedder: new MockEmbedder(),
     clock: () => new Date("2026-06-01T12:00:00Z"),
   });
   const upload = async (files: FilePart[]) => {

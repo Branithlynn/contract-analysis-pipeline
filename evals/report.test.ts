@@ -137,26 +137,28 @@ describe("renderReport", () => {
       header: HEADER,
       runs: [
         withCalls("saas", [
-          call({ ok: false, durationMs: 140000 }),
-          call({ kind: "repair", durationMs: 136000, numCtx: 12288 }),
+          call({ ok: false, durationMs: 140000, loadMs: 12 }),
+          call({ kind: "repair", durationMs: 136000, numCtx: 12288, loadMs: 7400 }),
         ]),
         withCalls("msa", [
           call({ durationMs: 90000 }),
           call({ chunkIndex: 1 }),
-          call({ kind: "summary", chunkIndex: null }),
+          call({ kind: "summary", chunkIndex: null, loadMs: null }),
         ]),
       ],
       expectedStatuses: ["completed", "completed"],
     });
 
     expect(report).toContain(
-      "| case | call | kind | chunk | duration | tokens in / out | num_ctx |",
+      "| case | call | kind | chunk | duration | tokens in / out | num_ctx | model load |",
     );
     expect(report).toContain(
-      "| saas | 1 | extract (unusable reply) | 1 | 140.0s | 100 / 10 | 8192 |",
+      "| saas | 1 | extract (unusable reply) | 1 | 140.0s | 100 / 10 | 8192 | 0.0s |",
     );
-    expect(report).toContain("| saas | 2 | repair | 1 | 136.0s | 100 / 10 | 12288 |");
-    expect(report).toContain("| msa | 3 | summary | - | 1.0s | 100 / 10 | 8192 |");
+    expect(report).toContain("| saas | 2 | repair | 1 | 136.0s | 100 / 10 | 12288 | 7.4s |");
+    expect(report).toContain("| msa | 3 | summary | - | 1.0s | 100 / 10 | 8192 | - |");
+    // Recorded before load times were: no value, not zero.
+    expect(report).toContain("| msa | 2 | extract | 2 | 1.0s | 100 / 10 | 8192 | - |");
     expect(report).toContain("Ollama reloads the model when num_ctx changes");
     expect(report).toContain(
       "- saas: call 2 (repair) ran with num_ctx 12288, the call before it in the same document used 8192",

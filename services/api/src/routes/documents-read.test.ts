@@ -9,7 +9,9 @@ import {
   loadConfig,
   migrate,
   openMemoryDb,
+  setIndexStatus,
   transitionStatus,
+  MockEmbedder,
   type Db,
 } from "@nexus/shared/node";
 import { buildServer } from "../server.js";
@@ -76,12 +78,45 @@ async function setup(now = NOW) {
     queue,
     config: loadConfig({}),
     logger: createLogger("api", "info", stream),
+    embedder: new MockEmbedder(),
     clock: () => now,
   });
   return { app, lines };
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe("index_status", () => {
+  it("is in the list and in the detail: null, indexed or failed", async () => {
+    addDoc(1);
+    addDoc(2);
+    complete(2, result());
+    setIndexStatus(db, id(2), "indexed");
+    addDoc(3);
+    complete(3, result());
+    setIndexStatus(db, id(3), "failed", "LLM_UNAVAILABLE: Cannot reach Ollama");
+    const { app } = await setup();
+
+    const res = await app.inject({ method: "GET", url: "/api/documents" });
+    const list = DocumentSummarySchema.array().parse(res.json());
+    const byId = new Map(list.map((d) => [d.id, d.index_status]));
+    expect(byId).toEqual(
+      new Map([
+        [id(1), null],
+        [id(2), "indexed"],
+        [id(3), "failed"],
+      ]),
+    );
+
+    const detail = await app.inject({ method: "GET", url: `/api/documents/${id(3)}` });
+    // A failed index does not make the document failed.
+    expect(DocumentDetailSchema.parse(detail.json())).toMatchObject({
+      status: "completed",
+      error_code: null,
+      index_status: "failed",
+    });
+  });
+});
 
 describe("GET /api/documents", () => {
   it("lists summaries newest first with extraction fields mapped", async () => {

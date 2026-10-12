@@ -95,6 +95,7 @@ export function toSummary(row: DocumentRow, result: ExtractionResult | null): Do
     error_code: row.error_code,
     error_message: row.error_message,
     duplicate_of: row.duplicate_of,
+    index_status: row.index_status,
     created_at: row.created_at,
     updated_at: row.updated_at,
     vendor_name: result?.vendor_name.value ?? null,

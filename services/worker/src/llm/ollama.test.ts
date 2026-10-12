@@ -365,6 +365,31 @@ describe("createOllamaProvider", () => {
     expect(res.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 
+  it("reports the model load time from load_duration in milliseconds", async () => {
+    // Nanoseconds: 6.2s, what a reload of the chat model looks like.
+    const reloaded = setup(() =>
+      Promise.resolve(chatResponse("{}", { load_duration: 6_200_000_000 })),
+    );
+    const warm = setup(() => Promise.resolve(chatResponse("{}", { load_duration: 11_400_000 })));
+    // Ollama leaves the field out when it is zero.
+    const omitted = setup(() => Promise.resolve(chatResponse("{}")));
+
+    expect((await reloaded.provider.complete(request)).loadMs).toBe(6200);
+    expect((await warm.provider.complete(request)).loadMs).toBe(11);
+    expect((await omitted.provider.complete(request)).loadMs).toBe(0);
+  });
+
+  it("keeps the load time on a reply that is not json", async () => {
+    const { provider } = setup(() =>
+      Promise.resolve(chatResponse("not json", { load_duration: 4_000_000_000 })),
+    );
+
+    const err = await expectLlmError(provider.complete(request));
+
+    expect(err.kind).toBe("bad_output");
+    expect(err.loadMs).toBe(4000);
+  });
+
   it("maps connection refused to unavailable and keeps the cause", async () => {
     const cause = new TypeError("fetch failed", {
       cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),

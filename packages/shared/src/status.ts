@@ -10,8 +10,17 @@ export const Stage = {
   parsing: "parsing",
   extracting: "extracting",
   validating: "validating",
+  indexing: "indexing",
 } as const;
 export type Stage = (typeof Stage)[keyof typeof Stage];
+
+// Separate from the document status on purpose: a document whose extraction worked is completed
+// even when its retrieval index could not be built. Null on the row means never indexed.
+export const IndexStatus = {
+  indexed: "indexed",
+  failed: "failed",
+} as const;
+export type IndexStatus = (typeof IndexStatus)[keyof typeof IndexStatus];
 
 export const ErrorCode = {
   UNSUPPORTED_TYPE: "UNSUPPORTED_TYPE",

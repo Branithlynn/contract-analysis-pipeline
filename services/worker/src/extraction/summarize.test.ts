@@ -87,6 +87,7 @@ describe("summarizeExtraction", () => {
       durationMs: expect.any(Number) as number,
       usage: result.usage,
       numCtx: null,
+      loadMs: null,
       // As the model wrote it: the stored summary is trimmed, this is not.
       rawText: JSON.stringify({ summary: " Acme provides hosting for 12 months. " }),
     });

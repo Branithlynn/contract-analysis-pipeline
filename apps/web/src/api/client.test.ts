@@ -21,6 +21,7 @@ const summary: DocumentSummary = {
   error_code: null,
   error_message: null,
   duplicate_of: null,
+  index_status: null,
   created_at: NOW,
   updated_at: NOW,
   vendor_name: null,

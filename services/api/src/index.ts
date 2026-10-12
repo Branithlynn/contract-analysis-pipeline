@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  createEmbedder,
   createLogger,
   createShutdown,
   LATEST_VERSION,
@@ -20,7 +21,13 @@ try {
   // Only the api migrates; the worker asserts the version, so the two never race on DDL.
   const applied = migrate(db);
   logger.info(
-    { applied, schemaVersion: LATEST_VERSION, path: config.DATABASE_PATH },
+    {
+      applied,
+      schemaVersion: LATEST_VERSION,
+      path: config.DATABASE_PATH,
+      embedProvider: config.EMBED_PROVIDER,
+      embedModel: config.EMBED_MODEL,
+    },
     "database ready",
   );
 
@@ -28,7 +35,8 @@ try {
 
   const queue = new BullMqJobQueue(config.REDIS_URL, config.JOB_ATTEMPTS, logger);
   const clock = () => new Date();
-  const app = await buildServer({ db, queue, config, logger, clock });
+  const embedder = createEmbedder(config);
+  const app = await buildServer({ db, queue, config, logger, embedder, clock });
   await app.listen({ host: "0.0.0.0", port: config.API_PORT });
 
   const reconciler = startReconciler({ db, queue, logger, clock });
@@ -41,6 +49,8 @@ try {
       // Stops accepting connections and waits for in-flight requests, which may still enqueue or write.
       ["http", () => app.close()],
       ["queue", () => queue.close()],
+      // After http, so no search request is still waiting on it.
+      ["embedder", async () => embedder.close?.()],
       ["db", () => db.close()],
     ],
   });

@@ -4,7 +4,15 @@ import { join } from "node:path";
 import { UnrecoverableError } from "bullmq";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ErrorCode, ExtractionResultSchema } from "@nexus/shared";
-import { getDocument, getExtraction, listEvents, transitionStatus } from "@nexus/shared/node";
+import {
+  getDocument,
+  getExtraction,
+  listEvents,
+  listRetrievalChunks,
+  LlmError,
+  transitionStatus,
+  type Embedder,
+} from "@nexus/shared/node";
 import { docId, makeDeps as makeBaseDeps, seedDocument } from "../test-support/fixtures.js";
 import { makePdf } from "../test-support/pdf.js";
 import type * as analyzeModule from "./analyze.js";
@@ -99,6 +107,124 @@ describe("processJob", () => {
     expect(lines.at(-1)).toMatchObject({ msg: "document already done, dropping job" });
   });
 
+  it("indexes the document after the extraction and marks it indexed", async () => {
+    const { deps, lines } = makeDeps();
+    const id = seedDocument(deps);
+
+    await processJob(job({ documentId: id, run: 1 }), deps);
+
+    expect(getDocument(deps.db, id)).toMatchObject({
+      status: "completed",
+      stage: null,
+      index_status: "indexed",
+      index_error: null,
+    });
+    // One short line per page, so the two pages fit one chunk. It starts on page 1.
+    const chunks = listRetrievalChunks(deps.db, id);
+    expect(chunks).toMatchObject([
+      { chunk_index: 0, page: 1, embed_model: "mock", embed_dim: 64, injection_flagged: 0 },
+    ]);
+    expect(chunks[0]?.text).toContain(LINE);
+    expect(lines).toContainEqual(
+      expect.objectContaining({ msg: "document indexed", documentId: id, chunks: 1 }),
+    );
+    expect(lines.find((line) => line.msg === "document completed")).toMatchObject({
+      indexStatus: "indexed",
+    });
+  });
+
+  it("completes the document when indexing fails, with index_status failed and a warning", async () => {
+    const { deps, lines } = makeDeps();
+    const embedder: Embedder = {
+      name: "ollama",
+      model: "nomic-embed-text",
+      embed: () => Promise.reject(new LlmError("unavailable", "Cannot reach Ollama")),
+    };
+    const id = seedDocument(deps);
+
+    // A transient failure anywhere else makes processJob throw, so bullmq retries. Not here.
+    await expect(
+      processJob(job({ documentId: id, run: 1 }), { ...deps, embedder }),
+    ).resolves.toBeUndefined();
+
+    const doc = getDocument(deps.db, id);
+    expect(doc).toMatchObject({
+      status: "completed",
+      stage: null,
+      error_code: null,
+      error_message: null,
+      index_status: "failed",
+      index_error: "LLM_UNAVAILABLE: Cannot reach Ollama",
+    });
+    // The extraction is stored and attached, exactly as without the failure.
+    expect(getExtraction(deps.db, doc?.latest_extraction_id ?? "")).toMatchObject({
+      document_id: id,
+      run: 1,
+    });
+    expect(listRetrievalChunks(deps.db, id)).toEqual([]);
+    expect(listEvents(deps.db, id)).toEqual([
+      expect.objectContaining({ stage: "parsing", outcome: "ok" }),
+      expect.objectContaining({ stage: "extracting", outcome: "ok" }),
+      expect.objectContaining({ stage: "validating", outcome: "ok" }),
+      expect.objectContaining({
+        stage: "indexing",
+        outcome: "error",
+        message: "LLM_UNAVAILABLE: Cannot reach Ollama",
+      }),
+      expect.objectContaining({ stage: "job", outcome: "info" }),
+    ]);
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        level: 40,
+        documentId: id,
+        code: "LLM_UNAVAILABLE",
+        msg: "indexing failed, the document completes without a search index",
+      }),
+    );
+    expect(lines.some((line) => line.msg === "document failed")).toBe(false);
+  });
+
+  it("completes the document when indexing throws something that is no llm error", async () => {
+    const { deps } = makeDeps();
+    const embedder: Embedder = {
+      name: "mock",
+      model: "mock",
+      embed: () => Promise.reject(new TypeError("boom")),
+    };
+    const id = seedDocument(deps);
+
+    await processJob(job({ documentId: id, run: 1 }), { ...deps, embedder });
+
+    expect(getDocument(deps.db, id)).toMatchObject({
+      status: "completed",
+      index_status: "failed",
+      index_error: "INTERNAL: boom",
+    });
+  });
+
+  it("indexes and clears the index error when the document is processed again", async () => {
+    const { deps } = makeDeps();
+    const failing: Embedder = {
+      name: "mock",
+      model: "mock",
+      embed: () => Promise.reject(new LlmError("timeout", "too slow")),
+    };
+    const id = seedDocument(deps);
+    await processJob(job({ documentId: id, run: 1 }), { ...deps, embedder: failing });
+    expect(getDocument(deps.db, id)).toMatchObject({ index_status: "failed" });
+    // What the retry endpoint does for a completed document that needs review.
+    transitionStatus(deps.db, id, "queued", { from: "completed", bumpRun: true });
+
+    await processJob(job({ documentId: id, run: 2 }), deps);
+
+    expect(getDocument(deps.db, id)).toMatchObject({
+      status: "completed",
+      index_status: "indexed",
+      index_error: null,
+    });
+    expect(listRetrievalChunks(deps.db, id)).toHaveLength(1);
+  });
+
   it("analyzes a real 2 page pdf, stores the extraction and completes it", async () => {
     const { deps, lines } = makeDeps();
     const id = seedDocument(deps);
@@ -120,6 +246,7 @@ describe("processJob", () => {
       expect.objectContaining({ stage: "parsing", outcome: "ok" }),
       expect.objectContaining({ stage: "extracting", outcome: "ok" }),
       expect.objectContaining({ stage: "validating", outcome: "ok" }),
+      expect.objectContaining({ stage: "indexing", outcome: "ok" }),
       // The default mock finds nothing it can quote, so grounding is 0 and a person should look.
       expect.objectContaining({
         stage: "job",

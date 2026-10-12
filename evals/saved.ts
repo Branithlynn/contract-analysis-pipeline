@@ -12,6 +12,7 @@ const CallSchema = z.object({
   durationMs: z.number(),
   usage: z.object({ inputTokens: z.number(), outputTokens: z.number() }),
   numCtx: z.number().nullable(),
+  loadMs: z.number().nullable().optional(),
   rawText: z.string().nullable().optional(),
 });
 

@@ -66,13 +66,19 @@ export async function summarizeExtraction(
   };
   const numCtx = provider.numCtx?.(req) ?? null;
   const started = performance.now();
-  const call = (ok: boolean, usage: LlmUsage, rawText: string | null): LlmCallInfo => ({
+  const call = (
+    ok: boolean,
+    usage: LlmUsage,
+    rawText: string | null,
+    loadMs: number | null,
+  ): LlmCallInfo => ({
     kind: "summary",
     chunkIndex: null,
     ok,
     durationMs: Math.round(performance.now() - started),
     usage,
     numCtx,
+    loadMs,
     rawText,
   });
 
@@ -81,19 +87,29 @@ export async function summarizeExtraction(
     const parsed = LlmSummarySchema.safeParse(res.json);
     const summary = parsed.success ? parsed.data.summary.trim() : "";
     if (summary !== "") {
-      return { summary, usage: res.usage, warnings: [], call: call(true, res.usage, res.rawText) };
+      return {
+        summary,
+        usage: res.usage,
+        warnings: [],
+        call: call(true, res.usage, res.rawText, res.loadMs ?? null),
+      };
     }
     logger.warn(
       { rawText: res.rawText.slice(0, 500), injectionSuspected },
       "summary reply unusable",
     );
-    return { ...fallback, usage: res.usage, call: call(false, res.usage, res.rawText) };
+    return {
+      ...fallback,
+      usage: res.usage,
+      call: call(false, res.usage, res.rawText, res.loadMs ?? null),
+    };
   } catch (err) {
     // The extraction already succeeded; a failed summary shouldn't fail the document, and it isn't
     // worth a bullmq retry of every chunk either.
     logger.warn({ err, injectionSuspected }, "summary call failed");
     const usage = err instanceof LlmError ? (err.usage ?? ZERO) : ZERO;
     const rawText = err instanceof LlmError ? (err.rawText ?? null) : null;
-    return { ...fallback, usage, call: call(false, usage, rawText) };
+    const loadMs = err instanceof LlmError ? (err.loadMs ?? null) : null;
+    return { ...fallback, usage, call: call(false, usage, rawText, loadMs) };
   }
 }

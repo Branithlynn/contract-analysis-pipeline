@@ -69,6 +69,12 @@ function addUsage(a: LlmUsage, b: LlmUsage): LlmUsage {
   };
 }
 
+// One line per provider call as it happens, so a reload (loadMs) or a grown num_ctx shows up
+// while a long document is still running. Without the raw reply, which is document content.
+function logCall(logger: AnalyzeDeps["logger"], call: LlmCallInfo): void {
+  logger.debug({ ...call, rawText: undefined }, "llm call");
+}
+
 async function extractAll(
   parsed: ParsedDocument,
   input: AnalyzeInput,
@@ -101,6 +107,7 @@ async function extractAll(
       },
       "chunk extracted",
     );
+    for (const call of extraction.calls) logCall(logger, call);
     return extraction;
   });
 }
@@ -144,6 +151,7 @@ async function validate(
     { timeoutMs: config.LLM_TIMEOUT_MS, logger, injectionSuspected: guard.passages.length > 0 },
   );
   warnings.push(...summary.warnings);
+  if (summary.call) logCall(logger, summary.call);
 
   const score = groundingScore(merged.data);
   const today = deps.clock().toISOString().slice(0, 10);

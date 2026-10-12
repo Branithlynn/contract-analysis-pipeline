@@ -1,4 +1,6 @@
-import type { LlmProviderName } from "@nexus/shared/node";
+import type { LlmProviderName, LlmUsage } from "@nexus/shared/node";
+
+export type { LlmUsage };
 
 export interface LlmMessage {
   role: "user" | "assistant";
@@ -15,11 +17,6 @@ export interface LlmRequest {
   maxOutputTokens: number;
 }
 
-export interface LlmUsage {
-  inputTokens: number;
-  outputTokens: number;
-}
-
 export interface LlmResponse {
   // Parsed but unvalidated: the caller runs it through zod.
   json: unknown;
@@ -27,6 +24,8 @@ export interface LlmResponse {
   usage: LlmUsage;
   model: string;
   latencyMs: number;
+  // Only ollama reports it, see LlmCallInfo.loadMs.
+  loadMs?: number;
 }
 
 // One provider call as the eval report shows it. Recorded for failed calls too: a reply that could
@@ -41,6 +40,11 @@ export interface LlmCallInfo {
   usage: LlmUsage;
   // Null for providers without a context size setting.
   numCtx: number | null;
+  // From ollama's load_duration: the time until the model was ready for this call. Near zero
+  // when it was still in memory, seconds when ollama had to load it again first (another model
+  // took its place, or num_ctx changed). Null when the provider does not report it or the call
+  // failed without a reply.
+  loadMs: number | null;
   // The reply as the model wrote it, before any of our code touched it. Null when the call failed
   // without one. Only the eval json keeps it; the worker leaves it out of its logs.
   rawText: string | null;

@@ -13,6 +13,7 @@ import {
   listCompletedForExport,
   listDocuments,
   listEvents,
+  setIndexStatus,
   setStage,
   transitionStatus,
   type CreateDocumentInput,
@@ -292,6 +293,37 @@ describe("setStage", () => {
     transitionStatus(db, "a", "processing", { from: "queued" });
     expect(setStage(db, "a", "extracting")).toBe(true);
     expect(getDocument(db, "a")?.stage).toBe("extracting");
+  });
+});
+
+describe("setIndexStatus", () => {
+  it("starts as null and stores failed with its reason", () => {
+    createDocument(db, doc("a"));
+    expect(getDocument(db, "a")).toMatchObject({ index_status: null, index_error: null });
+
+    expect(setIndexStatus(db, "a", "failed", "LLM_UNAVAILABLE: Cannot reach Ollama")).toBe(true);
+
+    expect(getDocument(db, "a")).toMatchObject({
+      index_status: "failed",
+      index_error: "LLM_UNAVAILABLE: Cannot reach Ollama",
+    });
+  });
+
+  it("clears the reason when the document gets indexed, and leaves status and updated_at alone", () => {
+    createDocument(db, doc("a"));
+    setIndexStatus(db, "a", "failed", "boom");
+    const before = getDocument(db, "a");
+    at("2026-10-11T10:00:00.000Z");
+
+    expect(setIndexStatus(db, "a", "indexed")).toBe(true);
+
+    expect(getDocument(db, "a")).toEqual({ ...before, index_status: "indexed", index_error: null });
+  });
+
+  it("refuses an error on an indexed document and reports an unknown id", () => {
+    createDocument(db, doc("a"));
+    expect(() => setIndexStatus(db, "a", "indexed", "boom")).toThrow(/cannot carry/);
+    expect(setIndexStatus(db, "missing", "indexed")).toBe(false);
   });
 });
 

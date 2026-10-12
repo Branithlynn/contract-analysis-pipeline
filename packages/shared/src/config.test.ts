@@ -76,6 +76,54 @@ describe("loadConfig", () => {
     expect(message).toMatch(/^ {2}OPENAI_API_KEY:/m);
   });
 
+  it("defaults embeddings to ollama and picks the model that goes with the provider", () => {
+    expect(loadConfig({})).toMatchObject({
+      EMBED_PROVIDER: "ollama",
+      EMBED_MODEL: "nomic-embed-text",
+    });
+    expect(loadConfig({ EMBED_PROVIDER: "openai", OPENAI_API_KEY: "sk-test" }).EMBED_MODEL).toBe(
+      "text-embedding-3-small",
+    );
+    expect(loadConfig({ EMBED_PROVIDER: "mock" }).EMBED_MODEL).toBe("mock");
+    // Blank counts as unset, compose passes EMBED_MODEL through like that.
+    expect(loadConfig({ EMBED_PROVIDER: "mock", EMBED_MODEL: "" }).EMBED_MODEL).toBe("mock");
+    expect(loadConfig({ EMBED_MODEL: "mxbai-embed-large" }).EMBED_MODEL).toBe("mxbai-embed-large");
+  });
+
+  it("keeps ollama embeddings on the cpu unless EMBED_OLLAMA_NUM_GPU says otherwise", () => {
+    expect(loadConfig({}).EMBED_OLLAMA_NUM_GPU).toBe(0);
+    expect(loadConfig({ EMBED_OLLAMA_NUM_GPU: "" }).EMBED_OLLAMA_NUM_GPU).toBe(0);
+    expect(loadConfig({ EMBED_OLLAMA_NUM_GPU: "99" }).EMBED_OLLAMA_NUM_GPU).toBe(99);
+    // -1 is ollama's own "decide for me".
+    expect(loadConfig({ EMBED_OLLAMA_NUM_GPU: "-1" }).EMBED_OLLAMA_NUM_GPU).toBe(-1);
+    expect(() => loadConfig({ EMBED_OLLAMA_NUM_GPU: "-2" })).toThrow(/EMBED_OLLAMA_NUM_GPU/);
+    expect(() => loadConfig({ EMBED_OLLAMA_NUM_GPU: "half" })).toThrow(/EMBED_OLLAMA_NUM_GPU/);
+  });
+
+  it("has no anthropic embeddings, and keeps the embed provider apart from the llm provider", () => {
+    expect(() => loadConfig({ EMBED_PROVIDER: "anthropic" })).toThrow(/EMBED_PROVIDER/);
+    expect(
+      loadConfig({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "sk-test" }).EMBED_PROVIDER,
+    ).toBe("ollama");
+  });
+
+  it("requires the openai key for openai embeddings, named once", () => {
+    let message = "";
+    try {
+      loadConfig({ EMBED_PROVIDER: "openai" });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/OPENAI_API_KEY: required when EMBED_PROVIDER=openai/);
+
+    try {
+      loadConfig({ EMBED_PROVIDER: "openai", LLM_PROVIDER: "openai" });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message.match(/OPENAI_API_KEY/g)).toHaveLength(1);
+  });
+
   it("returns the same object for the same env", () => {
     const env = { LOG_LEVEL: "debug" };
     expect(loadConfig(env)).toBe(loadConfig(env));

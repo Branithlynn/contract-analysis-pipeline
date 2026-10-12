@@ -4,6 +4,16 @@ import { DEFAULT_MAX_FILES_PER_REQUEST, DEFAULT_MAX_UPLOAD_MB } from "./limits.j
 export const LlmProviderName = z.enum(["ollama", "anthropic", "openai", "mock"]);
 export type LlmProviderName = z.infer<typeof LlmProviderName>;
 
+// No anthropic here: it has no embeddings api.
+export const EmbedProviderName = z.enum(["ollama", "openai", "mock"]);
+export type EmbedProviderName = z.infer<typeof EmbedProviderName>;
+
+export const DEFAULT_EMBED_MODELS: Record<EmbedProviderName, string> = {
+  ollama: "nomic-embed-text",
+  openai: "text-embedding-3-small",
+  mock: "mock",
+};
+
 // The versions of the extraction prompt the worker has. Listed here so the config can validate the
 // choice; the prompts themselves live in the worker.
 export const ExtractPromptVersion = z.enum(["extract.v1", "extract.v2", "extract.v3"]);
@@ -29,6 +39,14 @@ const ConfigSchema = z
     // default because it won the evals on both models (see evals/results). v1 and v2 stay
     // selectable so those runs can be repeated.
     PROMPT_VERSION: ExtractPromptVersion.default("extract.v3"),
+    // Chosen separately from LLM_PROVIDER, so extraction can run on anthropic while embeddings
+    // stay local. The model defaults to the provider's entry in DEFAULT_EMBED_MODELS.
+    EMBED_PROVIDER: EmbedProviderName.default("ollama"),
+    EMBED_MODEL: z.string().optional(),
+    // Sent as options.num_gpu on ollama embed requests: how many layers go to the gpu. 0 keeps the
+    // embedding model in system ram, so it needs no vram and stays loaded next to the chat model
+    // instead of making ollama swap the two on every document. -1 lets ollama decide.
+    EMBED_OLLAMA_NUM_GPU: z.coerce.number().int().min(-1).default(0),
     OLLAMA_URL: z.url().default("http://localhost:11434"),
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
@@ -54,12 +72,27 @@ const ConfigSchema = z
           });
         }
       }
+      if (
+        config.EMBED_PROVIDER === "openai" &&
+        config.LLM_PROVIDER !== "openai" &&
+        config.OPENAI_API_KEY === undefined
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["OPENAI_API_KEY"],
+          message: "required when EMBED_PROVIDER=openai",
+        });
+      }
     },
     // zod skips refinements once a field fails its type check, which would hide a missing key behind
     // e.g. a bad API_PORT. Always run it so the boot error lists everything. It only compares strings,
     // so partially invalid input is safe here.
     { when: () => true },
-  );
+  )
+  .transform((config) => ({
+    ...config,
+    EMBED_MODEL: config.EMBED_MODEL ?? DEFAULT_EMBED_MODELS[config.EMBED_PROVIDER],
+  }));
 export type Config = z.infer<typeof ConfigSchema>;
 
 type Env = Record<string, string | undefined>;

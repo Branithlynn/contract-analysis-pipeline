@@ -69,6 +69,49 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_processing_events_document ON processing_events (document_id, id);
     `,
   },
+  {
+    version: 2,
+    name: "retrieval index",
+    sql: `
+      -- SQLite cannot change a CHECK in place. Dropping and re-adding the column is allowed because
+      -- the CHECK only mentions the column itself, and it avoids rebuilding documents, which the
+      -- other tables reference. The temp table carries the stage of documents that are mid job.
+      CREATE TEMP TABLE migration_stage AS
+        SELECT id, stage FROM documents WHERE stage IS NOT NULL;
+      ALTER TABLE documents DROP COLUMN stage;
+      ALTER TABLE documents ADD COLUMN stage TEXT
+        CHECK (stage IN ('parsing', 'extracting', 'validating', 'indexing'));
+      UPDATE documents
+        SET stage = (SELECT s.stage FROM migration_stage s WHERE s.id = documents.id)
+        WHERE id IN (SELECT id FROM migration_stage);
+      DROP TABLE migration_stage;
+
+      -- NULL: never indexed (processed before this feature, not completed yet, or a duplicate).
+      ALTER TABLE documents ADD COLUMN index_status TEXT
+        CHECK (index_status IN ('indexed', 'failed'));
+      ALTER TABLE documents ADD COLUMN index_error TEXT;
+
+      -- A plain table with the vector as a blob, not a vec0 virtual table: vec0 fixes the
+      -- dimension when the table is created, and here it depends on EMBED_MODEL. Model and
+      -- dimension are on every row, so the search skips rows from another model instead of
+      -- comparing them with a vector they don't match.
+      CREATE TABLE retrieval_chunks (
+        id INTEGER PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents (id),
+        chunk_index INTEGER NOT NULL,
+        page INTEGER,
+        text TEXT NOT NULL,
+        injection_flagged INTEGER NOT NULL DEFAULT 0 CHECK (injection_flagged IN (0, 1)),
+        embed_model TEXT NOT NULL,
+        embed_dim INTEGER NOT NULL CHECK (embed_dim > 0),
+        -- embed_dim float32 values, little endian.
+        embedding BLOB NOT NULL CHECK (length(embedding) = embed_dim * 4),
+        created_at TEXT NOT NULL,
+        UNIQUE (document_id, chunk_index)
+      );
+      CREATE INDEX idx_retrieval_chunks_model ON retrieval_chunks (embed_model, embed_dim);
+    `,
+  },
 ];
 
 export const LATEST_VERSION = Math.max(0, ...MIGRATIONS.map((m) => m.version));

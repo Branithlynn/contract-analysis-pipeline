@@ -1,5 +1,21 @@
 {
   "worktree": {
     "bgIsolation": "none"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-env-dump.cjs\"",
+            "shell": "bash",
+            "timeout": 10,
+            "statusMessage": "Checking for env dumps"
+          }
+        ]
+      }
+    ]
   }
 }

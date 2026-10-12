@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { EventOutcome } from "../schemas/api.js";
 import type { ExtractionResult } from "../schemas/extraction.js";
-import { ALLOWED_TRANSITIONS, type DocumentStatus, type ErrorCode, type Stage } from "../status.js";
+import {
+  ALLOWED_TRANSITIONS,
+  type DocumentStatus,
+  type ErrorCode,
+  type IndexStatus,
+  type Stage,
+} from "../status.js";
 import type { Db } from "./client.js";
 
 // Rows mirror the tables 1:1. The CHECK constraints are what make the narrowed union types safe.
@@ -22,6 +28,9 @@ export interface DocumentRow {
   run: number;
   duplicate_of: string | null;
   latest_extraction_id: string | null;
+  index_status: IndexStatus | null;
+  // Why the last indexing attempt failed. Null unless index_status is failed.
+  index_error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -233,6 +242,25 @@ export function setStage(db: Db, id: string, stage: Stage): boolean {
       "UPDATE documents SET stage = ?, updated_at = ? WHERE id = ? AND status = 'processing'",
     )
     .run(stage, now(), id);
+  return result.changes === 1;
+}
+
+// Not a document status: the document is completed either way. updated_at is left alone, it is
+// the time the document itself last changed.
+export function setIndexStatus(
+  db: Db,
+  id: string,
+  status: IndexStatus,
+  error: string | null = null,
+): boolean {
+  if (status === "indexed" && error !== null) {
+    throw new Error("An indexed document cannot carry an index error");
+  }
+  const result = db
+    .prepare<[IndexStatus, string | null, string]>(
+      "UPDATE documents SET index_status = ?, index_error = ? WHERE id = ?",
+    )
+    .run(status, error, id);
   return result.changes === 1;
 }
 

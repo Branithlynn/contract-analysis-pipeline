@@ -9,6 +9,7 @@ import {
   migrate,
   openMemoryDb,
   transitionStatus,
+  MockEmbedder,
   type Db,
 } from "@nexus/shared/node";
 import { buildServer } from "../server.js";
@@ -79,6 +80,7 @@ async function exportCsv() {
     queue: okQueue,
     config: loadConfig({}),
     logger: createLogger("api", "silent"),
+    embedder: new MockEmbedder(),
     clock: () => NOW,
   });
   return app.inject({ method: "GET", url: "/api/documents/export.csv" });

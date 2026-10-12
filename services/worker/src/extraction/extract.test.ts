@@ -15,7 +15,7 @@ import {
   buildUserMessage,
 } from "../llm/prompts/extract.v1.js";
 import { extractPrompt } from "../llm/prompts/extract.js";
-import type { LlmRequest } from "../llm/types.js";
+import type { LlmProvider, LlmRequest } from "../llm/types.js";
 import { PermanentError } from "../pipeline/errors.js";
 import { extractChunk } from "./extract.js";
 
@@ -69,6 +69,7 @@ describe("extractChunk", () => {
         durationMs: expect.any(Number) as number,
         usage: result.usage,
         numCtx: null,
+        loadMs: null,
         rawText: JSON.stringify(MOCK_EXTRACTION),
       },
     ]);
@@ -179,6 +180,42 @@ describe("extractChunk", () => {
     const result = await extractChunk(sized, chunk, opts);
 
     expect(result.calls.map((call) => call.numCtx)).toEqual([8192, 12288]);
+  });
+
+  it("records the model load time of each call, also for a reply that could not be used", async () => {
+    const usage = { inputTokens: 10, outputTokens: 5 };
+    let call = 0;
+    const provider: LlmProvider = {
+      name: "ollama",
+      model: "qwen2.5:7b-instruct",
+      complete: () => {
+        call++;
+        if (call === 1) {
+          // Came back after a reload, but as broken json.
+          return Promise.reject(
+            new LlmError("bad_output", "model output is not valid json", "{oops", {
+              usage,
+              loadMs: 6200,
+            }),
+          );
+        }
+        return Promise.resolve({
+          json: MOCK_EXTRACTION,
+          rawText: JSON.stringify(MOCK_EXTRACTION),
+          usage,
+          model: "qwen2.5:7b-instruct",
+          latencyMs: 1,
+          loadMs: 12,
+        });
+      },
+    };
+
+    const result = await extractChunk(provider, chunk, opts);
+
+    expect(result.calls.map((c) => [c.kind, c.ok, c.loadMs])).toEqual([
+      ["extract", false, 6200],
+      ["repair", true, 12],
+    ]);
   });
 
   it("cuts the error list for the repair call to 2000 chars", async () => {

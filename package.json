@@ -32,6 +32,8 @@
     "eval": "tsx evals/run.ts",
     "preeval:rescore": "tsc -b",
     "eval:rescore": "tsx evals/rescore.ts",
+    "preindex:backfill": "tsc -b",
+    "index:backfill": "tsx scripts/index-backfill.ts",
     "prellm-smoke": "tsc -b",
     "llm-smoke": "tsx scripts/llm-smoke.ts"
   },

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 
 export type Db = Database.Database;
 
@@ -16,10 +17,17 @@ function applyPragmas(db: Db): void {
   db.pragma("foreign_keys = ON");
 }
 
+// Only the search query needs it (vec_distance_cosine). It is loaded on every connection anyway,
+// so a missing or broken native binary fails at boot and not on the first search.
+function loadVectorFunctions(db: Db): void {
+  sqliteVec.load(db);
+}
+
 export function openDb(path: string): Db {
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   applyPragmas(db);
+  loadVectorFunctions(db);
   return db;
 }
 
@@ -27,5 +35,6 @@ export function openDb(path: string): Db {
 export function openMemoryDb(): Db {
   const db = new Database(":memory:");
   applyPragmas(db);
+  loadVectorFunctions(db);
   return db;
 }

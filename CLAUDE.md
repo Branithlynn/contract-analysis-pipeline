@@ -9,6 +9,7 @@ Take-home: upload vendor contracts (pdf/docx), process them async, extract struc
 - Packages + versions I name in a step are approved. Anything I didn't mention, ask first and tell me why.
 - After changes run `npm run typecheck && npm run lint && npm test` and tell me what actually happened. Never skip or loosen a test to get green.
 - Don't touch git: no commits, branches, pushes or PRs. I review the diff and commit myself. git status / diff / log are fine.
+- Never print .env or resolved env values (docker compose config, printenv, env, cat .env, docker inspect). The session log gets committed. Check compose files with `docker compose config --quiet`.
 
 ## layout
 - packages/shared: types + zod schemas used across services. `@nexus/shared` is browser safe, node-only stuff goes in `@nexus/shared/node`

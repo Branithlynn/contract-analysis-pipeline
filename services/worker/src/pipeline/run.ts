@@ -1,15 +1,17 @@
 import { UnrecoverableError, type Job } from "bullmq";
 import { z } from "zod";
-import { ErrorCode } from "@nexus/shared";
+import { ErrorCode, type IndexStatus } from "@nexus/shared";
 import {
   ExtractJobPayload,
   getDocument,
   insertEvent,
   insertExtraction,
+  setIndexStatus,
   transitionStatus,
   type Logger,
 } from "@nexus/shared/node";
 import type { WorkerDeps } from "../deps.js";
+import { indexDocument } from "../retrieval/index-document.js";
 import { analyzeDocument, type AnalysisResult } from "./analyze.js";
 import { PermanentError, classifyError, type ClassifiedError } from "./errors.js";
 import { eventMessage, runStage, type StageContext } from "./stage.js";
@@ -72,6 +74,8 @@ export async function processJob(job: ExtractJob, deps: WorkerDeps): Promise<voi
     throw handleFailure(job, ctx, log, err);
   }
 
+  const index = await buildIndex(ctx, log, result.parsed.text);
+
   const { needsReview, meta } = result;
   const groundingScore = result.result.grounding_score;
   // One transaction: a completed document always has its extraction, and a document that left
@@ -82,6 +86,7 @@ export async function processJob(job: ExtractJob, deps: WorkerDeps): Promise<voi
       needs_review: needsReview,
     });
     if (!moved) return false;
+    setIndexStatus(deps.db, documentId, index.status, index.error);
     insertExtraction(deps.db, {
       document_id: documentId,
       run,
@@ -110,7 +115,32 @@ export async function processJob(job: ExtractJob, deps: WorkerDeps): Promise<voi
   }
   // The raw replies are document content and can be long. They are for the eval json, not the log.
   const calls = meta.calls.map((call) => ({ ...call, rawText: undefined }));
-  log.info({ needsReview, groundingScore, ...meta, calls }, "document completed");
+  log.info(
+    { needsReview, groundingScore, indexStatus: index.status, ...meta, calls },
+    "document completed",
+  );
+}
+
+// The extraction is the result people wait for and it is done at this point, so a failed index does
+// not fail the document, and it is not retried through bullmq either: that would run the whole
+// extraction again. The document completes with index_status failed, runStage has put the error
+// on its timeline, and `npm run index:backfill` builds the index later.
+async function buildIndex(
+  ctx: StageContext,
+  log: Logger,
+  text: string,
+): Promise<{ status: IndexStatus; error: string | null }> {
+  try {
+    const summary = await runStage(ctx, "indexing", () =>
+      indexDocument({ ...ctx.deps, logger: log }, ctx.documentId, text),
+    );
+    log.info({ ...summary }, "document indexed");
+    return { status: "indexed", error: null };
+  } catch (err) {
+    const { code, message } = classifyError(err);
+    log.warn({ code, err }, "indexing failed, the document completes without a search index");
+    return { status: "failed", error: eventMessage(`${code}: ${message}`) };
+  }
 }
 
 // Covers the failures processJob never sees. When a worker dies twice while holding a job, bullmq

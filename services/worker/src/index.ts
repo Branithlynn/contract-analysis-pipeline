@@ -1,5 +1,6 @@
 import {
   assertMigrated,
+  createEmbedder,
   createLogger,
   createShutdown,
   loadConfig,
@@ -20,7 +21,8 @@ try {
   assertMigrated(db);
 
   const provider = createProvider(config);
-  const deps: WorkerDeps = { db, config, logger, provider, clock: () => new Date() };
+  const embedder = createEmbedder(config);
+  const deps: WorkerDeps = { db, config, logger, provider, embedder, clock: () => new Date() };
   // close() lets active jobs finish, which can take as long as one llm call.
   // docker compose stop_grace_period has to be longer than this (6m with the defaults), or SIGKILL
   // arrives before active jobs finish.
@@ -33,6 +35,8 @@ try {
       concurrency: worker.opts.concurrency,
       provider: provider.name,
       model: provider.model,
+      embedProvider: embedder.name,
+      embedModel: embedder.model,
       // The three timeouts depend on each other, so a wrong setting should show up here at startup.
       llmTimeoutMs: config.LLM_TIMEOUT_MS,
       lockDurationMs: worker.opts.lockDuration,
@@ -50,6 +54,7 @@ try {
       ["worker", () => worker.close()],
       // After the worker, so no call is still using the connection pool.
       ["llm", async () => provider.close?.()],
+      ["embedder", async () => embedder.close?.()],
       [
         "db",
         () => {

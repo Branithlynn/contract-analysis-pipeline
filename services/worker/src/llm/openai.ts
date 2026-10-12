@@ -1,22 +1,11 @@
-import OpenAI, {
-  APIConnectionError,
-  APIConnectionTimeoutError,
-  APIError,
-  AuthenticationError,
-  BadRequestError,
-  ConflictError,
-  InternalServerError,
-  NotFoundError,
-  PermissionDeniedError,
-  RateLimitError,
-  UnprocessableEntityError,
-} from "openai";
+import OpenAI, { APIError } from "openai";
 import type {
   Response,
   ResponseCreateParamsNonStreaming,
   ResponseUsage,
 } from "openai/resources/responses/responses";
-import { LlmError, type LlmErrorKind } from "./errors.js";
+import { openAIErrorKind } from "@nexus/shared/node";
+import { LlmError } from "./errors.js";
 import { parseJson } from "./json.js";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types.js";
 
@@ -42,25 +31,6 @@ export interface OpenAIOptions {
   apiKey: string;
   model: string;
   client?: OpenAIClient;
-}
-
-// Same mapping as the anthropic provider. Subclasses before the classes they extend.
-function toKind(err: APIError): LlmErrorKind {
-  if (err instanceof APIConnectionTimeoutError) return "timeout";
-  if (err instanceof APIConnectionError) return "unavailable";
-  if (err instanceof AuthenticationError || err instanceof PermissionDeniedError) return "auth";
-  if (err instanceof RateLimitError || err instanceof ConflictError) return "rate_limited";
-  if (err instanceof InternalServerError) return "unavailable";
-  if (
-    err instanceof BadRequestError ||
-    err instanceof NotFoundError ||
-    err instanceof UnprocessableEntityError
-  ) {
-    return "invalid_request";
-  }
-  // 413 has no class of its own and arrives as a plain APIError.
-  if (err.status === undefined || err.status >= 500) return "unavailable";
-  return "invalid_request";
 }
 
 function refusalOf(res: OpenAIReply): string | undefined {
@@ -99,7 +69,7 @@ export function createOpenAIProvider(opts: OpenAIOptions): LlmProvider {
       );
     } catch (err) {
       if (!(err instanceof APIError)) throw err;
-      const kind = toKind(err);
+      const kind = openAIErrorKind(err);
       const message =
         kind === "timeout"
           ? `OpenAI did not answer within ${req.timeoutMs}ms`

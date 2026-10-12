@@ -12,6 +12,9 @@ export interface CallInfo {
   usage: { inputTokens: number; outputTokens: number };
   // Null for providers without a context size (everything but ollama).
   numCtx: number | null;
+  // How long ollama needed to get the model ready for this call. Missing in runs saved before it
+  // was recorded, null for providers that do not report it.
+  loadMs?: number | null | undefined;
   // The model's reply as it came back. Missing in runs saved before it was recorded, null when
   // the call failed without a reply. Stays in the json, the report does not print it.
   rawText?: string | null | undefined;
@@ -176,6 +179,7 @@ function callLines(runs: readonly CaseRun[]): string[] {
         seconds(call.durationMs),
         `${String(call.usage.inputTokens)} / ${String(call.usage.outputTokens)}`,
         call.numCtx === null ? NONE : String(call.numCtx),
+        call.loadMs === null || call.loadMs === undefined ? NONE : seconds(call.loadMs),
       ]);
       if (call.numCtx === null) continue;
       if (previous !== null && previous.numCtx !== call.numCtx) {
@@ -192,7 +196,7 @@ function callLines(runs: readonly CaseRun[]): string[] {
   }
 
   const lines = table(
-    ["case", "call", "kind", "chunk", "duration", "tokens in / out", "num_ctx"],
+    ["case", "call", "kind", "chunk", "duration", "tokens in / out", "num_ctx", "model load"],
     rows,
   );
   lines.push("");

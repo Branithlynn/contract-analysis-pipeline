@@ -12,6 +12,7 @@ function doc(id: string, over: Partial<DocumentSummary> = {}): DocumentSummary {
     error_code: null,
     error_message: null,
     duplicate_of: null,
+    index_status: null,
     created_at: "2026-10-01T00:00:00.000Z",
     updated_at: "2026-10-01T00:00:00.000Z",
     vendor_name: null,

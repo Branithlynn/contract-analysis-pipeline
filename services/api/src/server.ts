@@ -1,12 +1,13 @@
 import fastifyMultipart from "@fastify/multipart";
 import { fastify } from "fastify";
 import type { ErrorBody } from "@nexus/shared";
-import type { Config, Db, Logger } from "@nexus/shared/node";
+import type { Config, Db, Embedder, Logger } from "@nexus/shared/node";
 import { errorHandler } from "./errors.js";
 import { healthRoutes } from "./health.js";
 import type { JobQueue } from "./queue.js";
 import { requestIdFrom } from "./request-id.js";
 import { documentRoutes } from "./routes/documents.js";
+import { searchRoutes } from "./routes/search.js";
 
 const MB = 1024 * 1024;
 
@@ -15,12 +16,14 @@ export interface ServerDeps {
   queue: JobQueue;
   config: Config;
   logger: Logger;
+  // Embeds search queries. The worker embeds the documents with the same provider and model.
+  embedder: Embedder;
   // Injected so tests can pin "today". Anything date dependent reads time through this.
   clock: () => Date;
 }
 
 // Returns the app without listening so tests can drive it with inject().
-export async function buildServer({ db, queue, config, logger, clock }: ServerDeps) {
+export async function buildServer({ db, queue, config, logger, embedder, clock }: ServerDeps) {
   const app = fastify({
     loggerInstance: logger,
     genReqId: (request) => requestIdFrom(request.headers["x-request-id"]),
@@ -48,6 +51,7 @@ export async function buildServer({ db, queue, config, logger, clock }: ServerDe
   });
   await app.register(healthRoutes, { db, queue });
   await app.register(documentRoutes, { prefix: "/api", db, queue, config, clock });
+  await app.register(searchRoutes, { prefix: "/api", db, embedder });
 
   return app;
 }

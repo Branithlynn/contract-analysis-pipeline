@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createLogger, loadConfig, openMemoryDb } from "@nexus/shared/node";
+import { createLogger, loadConfig, openMemoryDb, MockEmbedder } from "@nexus/shared/node";
 import { requestIdFrom } from "./request-id.js";
 import { buildServer } from "./server.js";
 import { okQueue } from "./test-support/fixtures.js";
@@ -42,6 +42,7 @@ describe("request id in the api logs", () => {
       queue: okQueue,
       config: loadConfig({}),
       logger: createLogger("api", "info", stream),
+      embedder: new MockEmbedder(),
       clock: () => new Date("2026-06-01T12:00:00Z"),
     });
     return { app, lines };

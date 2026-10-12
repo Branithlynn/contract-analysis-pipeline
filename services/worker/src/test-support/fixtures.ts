@@ -3,6 +3,7 @@ import {
   createLogger,
   loadConfig,
   migrate,
+  MockEmbedder,
   openMemoryDb,
   type CreateDocumentInput,
 } from "@nexus/shared/node";
@@ -29,6 +30,7 @@ export function makeDeps(env: Record<string, string> = {}) {
     config: loadConfig(env),
     logger: createLogger("worker", "debug", stream),
     provider: new MockProvider(),
+    embedder: new MockEmbedder(),
     clock: () => NOW,
   };
   return { deps, lines };

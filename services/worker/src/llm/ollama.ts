@@ -1,18 +1,20 @@
-import { createRequire } from "node:module";
-import { Agent, type Dispatcher } from "undici";
+import {
+  createOllamaAgent,
+  LlmError,
+  nodeFetch,
+  OllamaErrorBody,
+  ollamaErrorText,
+  ollamaFetchFailure,
+  ollamaStatusError,
+  type OllamaFetch,
+} from "@nexus/shared/node";
 import { z } from "zod";
 import { parseJson } from "./json.js";
 import { buildFieldGuide, capSchemaForOllama } from "./ollama-schema.js";
-import { LlmError } from "./errors.js";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types.js";
 
-type FetchInit = Omit<RequestInit, "dispatcher"> & { dispatcher: Dispatcher };
-type Fetch = (input: string, init: FetchInit) => Promise<Response>;
-
-// Types only: RequestInit's dispatcher is typed by the undici-types that @types/node pins (7.24),
-// the Agent by the undici package (7.29), and tsc sees two different Dispatcher declarations.
-// At runtime it is the same interface, the test against a local server covers that.
-const nodeFetch = fetch as unknown as Fetch;
+// index.ts logs it at startup, next to the provider it describes.
+export { undiciVersions } from "@nexus/shared/node";
 
 export interface OllamaOptions {
   baseUrl: string;
@@ -21,17 +23,7 @@ export interface OllamaOptions {
   numCtxFloor: number;
   // LLM_TIMEOUT_MS. How long the connection may stay silent, before the headers and between chunks.
   timeoutMs: number;
-  fetch?: Fetch;
-}
-
-// The Agent comes from the undici package, the fetch it is handed to is the copy bundled in node.
-// They have to stay close enough to work together, so both versions go into the startup log.
-export function undiciVersions(): { agent: string; nodeFetch: string | undefined } {
-  const pkg: unknown = createRequire(import.meta.url)("undici/package.json");
-  return {
-    agent: z.object({ version: z.string() }).parse(pkg).version,
-    nodeFetch: process.versions["undici"],
-  };
+  fetch?: OllamaFetch;
 }
 
 const NUM_CTX_CAP = 32768;
@@ -106,70 +98,17 @@ const ChatChunk = z.object({
   // Ollama leaves prompt_eval_count out when the prompt came from its cache.
   prompt_eval_count: z.number().optional(),
   eval_count: z.number().optional(),
+  // Nanoseconds until the model was ready for this request. Left out by ollama when it is zero.
+  load_duration: z.number().optional(),
 });
 
-const ErrorBody = z.object({ error: z.string() });
+const NS_PER_MS = 1_000_000;
 
 // GET /api/tags: the models that are pulled.
 const TagsBody = z.object({ models: z.array(z.object({ name: z.string() })) });
 // Listing models is instant on a healthy ollama. Much shorter than LLM_TIMEOUT_MS on purpose: the
 // check exists so that a dead ollama is noticed before a call waits that long.
 const CHECK_TIMEOUT_MS = 10_000;
-
-const ABORT_NAMES = new Set(["AbortError", "TimeoutError"]);
-
-// The connection's own limits (see the Agent below): time until the response headers, and time
-// between two body chunks. They surface as a TypeError("fetch failed") or "terminated" with one of
-// these further down the cause chain.
-const UNDICI_TIMEOUTS: Readonly<Record<string, string>> = {
-  HeadersTimeoutError: "did not start answering",
-  UND_ERR_HEADERS_TIMEOUT: "did not start answering",
-  BodyTimeoutError: "stopped sending mid-answer",
-  UND_ERR_BODY_TIMEOUT: "stopped sending mid-answer",
-};
-
-function causeChain(err: unknown): Error[] {
-  const chain: Error[] = [];
-  // Capped, a cause chain can point back at itself.
-  for (let current = err; current instanceof Error && chain.length < 8; current = current.cause) {
-    chain.push(current);
-  }
-  return chain;
-}
-
-function errorCode(err: Error): string | undefined {
-  return "code" in err && typeof err.code === "string" ? err.code : undefined;
-}
-
-// A timeout means ollama was reachable and just slow, which needs a different fix (a bigger
-// LLM_TIMEOUT_MS, a smaller model) than a connection error (wrong OLLAMA_URL, ollama not running).
-function fetchFailure(
-  err: unknown,
-  baseUrl: string,
-  timeoutMs: number,
-  silenceLimitMs: number,
-): LlmError {
-  const chain = causeChain(err);
-  if (chain.some((e) => ABORT_NAMES.has(e.name))) {
-    return new LlmError("timeout", `Ollama did not answer within ${timeoutMs}ms`, undefined, {
-      cause: err,
-    });
-  }
-  for (const e of chain) {
-    const what = UNDICI_TIMEOUTS[e.name] ?? UNDICI_TIMEOUTS[errorCode(e) ?? ""];
-    if (what !== undefined) {
-      return new LlmError(
-        "timeout",
-        `Ollama did not respond within ${silenceLimitMs}ms (it ${what})`,
-        undefined,
-        { cause: err },
-      );
-    }
-  }
-  return new LlmError("unavailable", `Cannot reach Ollama at ${baseUrl}`, undefined, {
-    cause: err,
-  });
-}
 
 interface ChatReply {
   content: string;
@@ -178,7 +117,7 @@ interface ChatReply {
 
 function readLine(line: string): z.infer<typeof ChatChunk> {
   const json = parseJson(line);
-  const error = json.ok ? ErrorBody.safeParse(json.value) : null;
+  const error = json.ok ? OllamaErrorBody.safeParse(json.value) : null;
   if (error?.success) {
     // Ollama reports a failure after the headers went out (e.g. out of memory) as a line of its own.
     throw new LlmError("unavailable", `Ollama failed mid-answer: ${error.data.error}`);
@@ -216,16 +155,6 @@ async function readChat(body: ReadableStream<Uint8Array> | null): Promise<ChatRe
   throw new LlmError("unavailable", "Ollama closed the stream before the answer was complete");
 }
 
-function errorText(body: string): string {
-  try {
-    const parsed = ErrorBody.safeParse(JSON.parse(body));
-    if (parsed.success) return parsed.data.error;
-  } catch {
-    // Not json (e.g. a proxy's html page), fall through to the raw body.
-  }
-  return body.slice(0, 500);
-}
-
 // Exported so the smoke script can print exactly what gets sent.
 export function buildChatBody(model: string, numCtxFloor: number, req: LlmRequest) {
   const system = ollamaSystemPrompt(req);
@@ -254,12 +183,9 @@ export function buildChatBody(model: string, numCtxFloor: number, req: LlmReques
 export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
   const { model, numCtxFloor } = opts;
   const baseUrl = opts.baseUrl.replace(/\/+$/, "");
-  const doFetch: Fetch = opts.fetch ?? nodeFetch;
-  // node's fetch gives up after 300s without response headers, and again after 300s without a body
-  // chunk, whatever our AbortSignal says. Ollama only sends headers with the first token, and on a
-  // cpu a cold start (loading the model, reading the prompt) takes longer than that. So ollama gets
-  // its own agent with both limits raised to our timeout, and the AbortSignal stays the total limit.
-  const agent = new Agent({ headersTimeout: opts.timeoutMs, bodyTimeout: opts.timeoutMs });
+  const doFetch: OllamaFetch = opts.fetch ?? nodeFetch;
+  // Raised connection limits, see createOllamaAgent. The embedder builds its agent the same way.
+  const agent = createOllamaAgent(opts.timeoutMs);
 
   type Sent = { status: number; body: string } | ({ status: 200 } & ChatReply);
 
@@ -278,7 +204,7 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
       return { status: 200, ...(await readChat(res.body)) };
     } catch (err) {
       if (err instanceof LlmError) throw err;
-      throw fetchFailure(err, baseUrl, req.timeoutMs, opts.timeoutMs);
+      throw ollamaFetchFailure(err, baseUrl, req.timeoutMs, opts.timeoutMs);
     }
   }
 
@@ -296,13 +222,13 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
           dispatcher: agent,
         });
       } catch (err) {
-        throw fetchFailure(err, baseUrl, CHECK_TIMEOUT_MS, CHECK_TIMEOUT_MS);
+        throw ollamaFetchFailure(err, baseUrl, CHECK_TIMEOUT_MS, CHECK_TIMEOUT_MS);
       }
       const body = await res.text();
       if (res.status !== 200) {
         throw new LlmError(
           "unavailable",
-          `Ollama returned ${res.status} for /api/tags: ${errorText(body)}`,
+          `Ollama returned ${res.status} for /api/tags: ${ollamaErrorText(body)}`,
         );
       }
       const json = parseJson(body);
@@ -325,25 +251,11 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
       const latencyMs = Math.round(performance.now() - started);
 
       if (!("content" in sent)) {
-        const { status, body } = sent;
-        if (status >= 500) {
-          throw new LlmError("unavailable", `Ollama returned ${status}: ${errorText(body)}`);
-        }
-        if (status === 429) {
-          // Ollama itself doesn't send this, but a proxy or gateway in front of it can.
-          throw new LlmError("rate_limited", `Ollama returned 429: ${errorText(body)}`);
-        }
-        const text = errorText(body);
-        if (status === 404 && /model/i.test(text)) {
-          throw new LlmError(
-            "invalid_request",
-            `Model ${model} not pulled. Run: ollama pull ${model}`,
-          );
-        }
-        throw new LlmError("invalid_request", `Ollama returned ${status}: ${text}`);
+        throw ollamaStatusError(sent.status, sent.body, model);
       }
 
-      const { done_reason, prompt_eval_count, eval_count } = sent.last;
+      const { done_reason, prompt_eval_count, eval_count, load_duration } = sent.last;
+      const loadMs = Math.round((load_duration ?? 0) / NS_PER_MS);
       const usage = { inputTokens: prompt_eval_count ?? 0, outputTokens: eval_count ?? 0 };
       const content = parseJson(sent.content);
       if (!content.ok) {
@@ -355,6 +267,7 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
           cause: content.error,
           truncated,
           usage,
+          loadMs,
         });
       }
 
@@ -362,6 +275,7 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
         json: content.value,
         rawText: sent.content,
         usage,
+        loadMs,
         model: sent.last.model ?? model,
         latencyMs,
       };

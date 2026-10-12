@@ -11,6 +11,7 @@ import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   DocumentDetailSchema,
+  SearchResponseSchema,
   UploadResponseSchema,
   type DocumentDetail,
   type LlmExtraction,
@@ -23,6 +24,7 @@ import {
   loadConfig,
   migrate,
   openDb,
+  MockEmbedder,
   type Db,
 } from "@nexus/shared/node";
 import { BullMqJobQueue } from "../../services/api/src/queue.js";
@@ -158,7 +160,9 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
     queue = new BullMqJobQueue(redisUrl, config.JOB_ATTEMPTS, logger, 100, prefix);
     inspector = new Queue(QUEUE_NAME, { connection: { url: redisUrl }, prefix });
 
-    app = await buildServer({ db: apiDb, queue, config, logger, clock: CLOCK });
+    // One embedder for both sides, like the two services sharing EMBED_PROVIDER and EMBED_MODEL.
+    const embedder = new MockEmbedder();
+    app = await buildServer({ db: apiDb, queue, config, logger, embedder, clock: CLOCK });
     await app.listen({ host: "127.0.0.1", port: 0 });
     baseUrl = `http://127.0.0.1:${String((app.server.address() as AddressInfo).port)}`;
 
@@ -169,7 +173,7 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
       }
       return req.schemaName === "contract_summary" ? { summary: SAAS_REPLY.summary } : SAAS_REPLY;
     });
-    const deps: WorkerDeps = { db: workerDb, config, logger, provider, clock: CLOCK };
+    const deps: WorkerDeps = { db: workerDb, config, logger, provider, embedder, clock: CLOCK };
     // The production worker: same bullmq options and handlers as services/worker/src/index.ts.
     worker = createWorker(config, deps, prefix);
     await worker.waitUntilReady();
@@ -239,7 +243,23 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
     });
     expect(doc.extraction).toMatchObject({ provider: "mock", chunk_count: 1 });
     const ok = doc.events.filter((event) => event.outcome === "ok").map((event) => event.stage);
-    expect(ok).toEqual(["parsing", "extracting", "validating"]);
+    expect(ok).toEqual(["parsing", "extracting", "validating", "indexing"]);
+  });
+
+  // The worker wrote the chunks on its connection, the api embeds the question and reads them on its own.
+  it("finds a passage of the processed pdf through the search endpoint", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/search?q=${encodeURIComponent("payment terms net 30")}&k=3`,
+    );
+
+    expect(res.status).toBe(200);
+    const hits = SearchResponseSchema.parse(await res.json());
+    expect(hits.length).toBeGreaterThan(0);
+    for (const hit of hits) {
+      expect(hit).toMatchObject({ document_id: firstId, file_name: "saas-subscription.pdf" });
+      expect(hit.page).toBeGreaterThanOrEqual(1);
+    }
+    expect(hits.some((hit) => hit.text.includes("Payment terms are Net 30"))).toBe(true);
   });
 
   // Only works because the first result did not need review: dedupe reuses trusted results only.

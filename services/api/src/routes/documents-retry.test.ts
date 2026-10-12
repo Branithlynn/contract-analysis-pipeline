@@ -9,6 +9,7 @@ import {
   migrate,
   openMemoryDb,
   transitionStatus,
+  MockEmbedder,
   type Db,
 } from "@nexus/shared/node";
 import type { JobQueue } from "../queue.js";
@@ -68,6 +69,7 @@ async function setup({ failEnqueue = false } = {}) {
     queue,
     config: loadConfig({}),
     logger: createLogger("api", "silent"),
+    embedder: new MockEmbedder(),
     clock: () => new Date("2026-06-01T12:00:00Z"),
   });
   const retry = (id = ID) => app.inject({ method: "POST", url: `/api/documents/${id}/retry` });
