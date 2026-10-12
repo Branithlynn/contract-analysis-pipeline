@@ -35,6 +35,8 @@ export function stepLabel(tool: string, input: Record<string, unknown>): string 
       return "Checking the contracts";
     case "get_contract":
       return "Reading a contract";
+    case "lookup_reminder":
+      return "Asked to look it up first";
     default:
       return `Running ${tool}`;
   }
@@ -336,7 +338,8 @@ export function citationTitle(citation: AskCitation): string {
 export interface CitationTarget {
   documentId: string;
   // The passage to show in the document, for a citation of a chunk.
-  passage: { chunkId: number; quote: string | null } | null;
+  // page: where the citation says the passage is, for the link into the file.
+  passage: { chunkId: number; quote: string | null; page: number | null } | null;
 }
 
 // Where a click on a citation goes. Null when there is nothing to open.
@@ -344,11 +347,37 @@ export function citationTarget(citation: AskCitation): CitationTarget | null {
   if (citation.status === "not_found" || citation.document_id === null) return null;
   if (citation.kind === "contract") return { documentId: citation.document_id, passage: null };
   const quote = citation.quotes.find((q) => q.found)?.text ?? null;
-  return { documentId: citation.document_id, passage: { chunkId: Number(citation.id), quote } };
+  return {
+    documentId: citation.document_id,
+    passage: { chunkId: Number(citation.id), quote, page: citation.page_start },
+  };
 }
 
 export function unverifiedCount(citations: readonly AskCitation[]): number {
   return citations.filter((citation) => citation.status !== "verified").length;
+}
+
+export interface FileLink {
+  href: string;
+  label: string;
+  // Open in a new tab (a pdf, in the browser's viewer) or save (anything else).
+  download: boolean;
+}
+
+// The way from a cited passage to the contract itself. A pdf opens in the browser's own viewer,
+// which goes to the page named in the address. A docx has no pages and no viewer, so it can
+// only be downloaded.
+export function fileLink(fileUrl: string, mime: string, page: number | null): FileLink {
+  if (mime !== "application/pdf") {
+    return { href: fileUrl, label: "Download the document", download: true };
+  }
+  return page === null
+    ? { href: fileUrl, label: "Open the document", download: false }
+    : {
+        href: `${fileUrl}#page=${String(page)}`,
+        label: `Open page ${String(page)}`,
+        download: false,
+      };
 }
 
 // The text with every run of whitespace as one space, lowercased, and where each of its

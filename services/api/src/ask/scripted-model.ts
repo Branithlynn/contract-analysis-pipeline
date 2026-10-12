@@ -1,6 +1,7 @@
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
+import { isLookupReminder } from "./reminder.js";
 
 // What the model would have answered to these messages: tool calls or the final text.
 export type ChatScript = (
@@ -48,12 +49,14 @@ export function toolCall(name: string, args: Record<string, unknown>): AIMessage
   });
 }
 
-// The messages of the question being answered: everything after the last human message.
+// The messages of the question being answered: everything after the user's last message. The
+// lookup reminder is a human message too, but not a question: a script sees the same question
+// and the same tool results before and after it.
 export function currentTurn(messages: readonly BaseMessage[]): {
   question: string;
   toolResults: string[];
 } {
-  const at = messages.findLastIndex((m) => m.getType() === "human");
+  const at = messages.findLastIndex((m) => m.getType() === "human" && !isLookupReminder(m));
   const question = messages[at]?.text ?? "";
   const toolResults = messages
     .slice(at + 1)

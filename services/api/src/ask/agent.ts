@@ -17,6 +17,7 @@ import type { ReadContext } from "../services/dto.js";
 import type { ChatModels } from "./chat-models.js";
 import { verifyCitations, type CitationSources } from "./citations.js";
 import { buildAskSystemPrompt } from "./prompt.js";
+import { isLookupReminder, lookupReminder, LOOKUP_REMINDER_STEP } from "./reminder.js";
 import { createAskTools, loadContract, summaryOf } from "./tools.js";
 
 export interface AskDeps {
@@ -66,20 +67,36 @@ class StepLimitError extends Error {
   }
 }
 
-// Counts the model calls of one question. When the last allowed call asks for tools again, the
-// run ends there: running them would be work nobody reads. The agent is built per question, so
-// the count is too. langchain ships a modelCallLimitMiddleware for this, but its types do not
-// compile under exactOptionalPropertyTypes and it keeps its count in the thread, where a run
-// that was cut short leaves it behind.
-function stepLimit(maxSteps: number) {
+// The two rules of a run that the model does not get a say in:
+// - A first reply without a tool call is sent back once with the lookup reminder. Once: a second
+//   reply without one is taken as the answer, the question may really not need a lookup.
+// - The model calls of one question are counted, the one that was sent back included. When the
+//   last allowed call asks for tools again, the run ends there: running them would be work nobody
+//   reads.
+// The agent is built per question, so the count is too. langchain ships a
+// modelCallLimitMiddleware for the second rule, but its types do not compile under
+// exactOptionalPropertyTypes and it keeps its count in the thread, where a run that was cut short
+// leaves it behind.
+function runRules(maxSteps: number) {
   let calls = 0;
   return createMiddleware({
-    name: "StepLimit",
-    afterModel: (state) => {
-      calls += 1;
-      const last = state.messages.at(-1);
-      const wantsTools = last instanceof AIMessage && (last.tool_calls?.length ?? 0) > 0;
-      if (calls >= maxSteps && wantsTools) throw new StepLimitError(maxSteps);
+    name: "RunRules",
+    afterModel: {
+      canJumpTo: ["model"],
+      hook: (state) => {
+        calls += 1;
+        const last = state.messages.at(-1);
+        const wantsTools = last instanceof AIMessage && (last.tool_calls?.length ?? 0) > 0;
+        if (calls >= maxSteps && wantsTools) throw new StepLimitError(maxSteps);
+        // Not when this was the only call there is: the reminder would have nobody to go to.
+        if (calls === 1 && !wantsTools && maxSteps > 1) {
+          return {
+            messages: [lookupReminder()],
+            jumpTo: "model" as const,
+          };
+        }
+        return undefined;
+      },
     },
   });
 }
@@ -92,6 +109,7 @@ export function stepsOf(turn: readonly BaseMessage[]): AskStep[] {
   }
   const steps: AskStep[] = [];
   for (const message of turn) {
+    if (isLookupReminder(message)) steps.push(LOOKUP_REMINDER_STEP);
     if (!(message instanceof AIMessage)) continue;
     for (const call of message.tool_calls ?? []) {
       const result = call.id === undefined ? undefined : results.get(call.id);
@@ -148,6 +166,12 @@ function progressOf(message: unknown): AskProgress[] {
   if (message instanceof ToolMessage) {
     return [{ type: "tool_result", tool: message.name ?? "tool", result: summaryOf(message.text) }];
   }
+  if (message instanceof HumanMessage && isLookupReminder(message)) {
+    return [
+      { type: "tool_call", tool: LOOKUP_REMINDER_STEP.tool, input: {} },
+      { type: "tool_result", tool: LOOKUP_REMINDER_STEP.tool, result: LOOKUP_REMINDER_STEP.result },
+    ];
+  }
   return [];
 }
 
@@ -171,7 +195,7 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
     }),
     systemPrompt: buildAskSystemPrompt(context.today, input.documentId),
     checkpointer: deps.threads,
-    middleware: [stepLimit(deps.maxSteps)],
+    middleware: [runRules(deps.maxSteps)],
   });
   const thread = { configurable: { thread_id: input.threadId } };
 
@@ -226,7 +250,8 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
   // a local model's context overflows. A follow-up that needs the passages searches again.
   // The answer is written back with the trace attached: a message with the id of one that is
   // there replaces it.
-  const between = turn.filter((message) => message !== last && !(message instanceof HumanMessage));
+  // Everything between the two goes, the reminder and the reply it answered included.
+  const between = turn.slice(1, -1);
   const metadata: AnswerMetadata = {
     steps,
     model: input.model,

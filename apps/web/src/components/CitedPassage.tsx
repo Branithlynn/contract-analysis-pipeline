@@ -1,25 +1,29 @@
-import { X } from "lucide-react";
+import { Download, ExternalLink, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { pagesOfQuote } from "@nexus/shared";
-import { ApiError } from "../api/client.js";
+import { ApiError, documentFileUrl } from "../api/client.js";
 import { useChunk } from "../api/hooks.js";
-import { highlightQuote } from "../lib/chatModel.js";
+import { fileLink, highlightQuote } from "../lib/chatModel.js";
 
 export interface Passage {
   chunkId: number;
   // The words the answer quoted from the passage, when it quoted any.
   quote: string | null;
+  // The page the citation named. Used for the link when the passage itself is gone.
+  page: number | null;
 }
 
 interface Props {
   passage: Passage;
+  // The document the passage is from: its id and the type of the stored file.
+  document: { id: string; mime: string };
   onDismiss: () => void;
 }
 
 // The passage a chat answer cited, at the top of the document it is from: the page it is on and
-// the text, with the quoted words marked. There is no view of the original file to jump into,
-// so this is the place where the reader checks the answer against the contract's own words.
-export function CitedPassage({ passage, onDismiss }: Props) {
+// the text, with the quoted words marked, and a link to that page of the file itself. The block
+// is for checking the wording at a glance, the link for reading it in its place.
+export function CitedPassage({ passage, document, onDismiss }: Props) {
   const chunk = useChunk(passage.chunkId);
   const ref = useRef<HTMLElement>(null);
 
@@ -30,9 +34,10 @@ export function CitedPassage({ passage, onDismiss }: Props) {
 
   const data = chunk.data;
   const quotePages = data && passage.quote !== null ? pagesOfQuote(data, passage.quote) : null;
-  const pageStart = quotePages?.page_start ?? data?.page_start ?? null;
+  const pageStart = quotePages?.page_start ?? data?.page_start ?? passage.page;
   const pageEnd = quotePages?.page_end ?? data?.page_end ?? null;
   const marked = data ? highlightQuote(data.text, passage.quote) : null;
+  const link = fileLink(documentFileUrl(document.id), document.mime, pageStart);
 
   return (
     <section ref={ref} className="passage" aria-label="Cited passage">
@@ -57,6 +62,20 @@ export function CitedPassage({ passage, onDismiss }: Props) {
           <X size={14} aria-hidden="true" />
         </button>
       </div>
+      {/* A new tab: the chat and the answer being checked stay where they are. */}
+      <a
+        className="passage-link"
+        href={link.href}
+        {...(link.download ? { download: "" } : { target: "_blank", rel: "noreferrer" })}
+      >
+        {link.download ? (
+          <Download size={14} aria-hidden="true" />
+        ) : (
+          <ExternalLink size={14} aria-hidden="true" />
+        )}
+        {link.label}
+        {!link.download && <span className="visually-hidden"> (opens in a new tab)</span>}
+      </a>
       {data ? (
         <>
           <blockquote className="quote passage-text">

@@ -51,7 +51,7 @@ export const ORDER_RESULT: ExtractionResult = extractionResult({
   risk_clauses: [{ ...clause("medium"), category: "uncapped_liability", title: "No cap" }],
 });
 
-function addCompleted(
+export function addCompleted(
   db: Db,
   id: string,
   name: string,
@@ -93,6 +93,22 @@ const chunk = (index: number, text: string, page: number, flagged = false) => ({
   injection_flagged: flagged,
   embedding: mockEmbedding(text),
 });
+
+// A renewing contract whose notice deadline is this many days from the pinned today. It has to
+// renew: a contract that just ends has no deadline for stopping a renewal.
+export function resultWithNoticeIn(days: number, vendor: string): ExtractionResult {
+  const end = addDays(days + 30);
+  return extractionResult({
+    vendor_name: field(vendor),
+    auto_renewal: field(true),
+    effective_date: field("2025-01-01"),
+    expiration_date: { ...field(end), quote: "and expires on " + end },
+    initial_term_months: field(null),
+    renewal_term_months: field(12),
+    termination_notice_days: field(30),
+    risk_clauses: [],
+  });
+}
 
 export function seedContracts(): Db {
   const db = openMemoryDb();

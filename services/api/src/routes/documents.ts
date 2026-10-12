@@ -1,3 +1,6 @@
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import type { FastifyPluginCallback } from "fastify";
 import { z } from "zod";
 import { LlmProviderName, ModelSelectionSchema, type UploadResponse } from "@nexus/shared";
@@ -49,6 +52,18 @@ const UploadQuery = z
   .refine((q) => (q.provider === undefined) === (q.model === undefined), {
     message: "provider and model have to be given together",
   });
+
+// The name a browser shows or saves the file under. The original name is what the uploader's
+// machine called it, so it goes into the header in two safe forms: plain ascii for old clients
+// and percent-encoded utf-8 (RFC 5987) for the rest. Nothing of it can end the header early.
+export function inlineDisposition(originalName: string): string {
+  const ascii = originalName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  const encoded = encodeURIComponent(originalName).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `inline; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
 
 // Retry keeps the model the document had unless the body names another one.
 const RetryBody = ModelSelectionSchema.nullish();
@@ -109,6 +124,45 @@ export const documentRoutes: FastifyPluginCallback<DocumentRouteDeps> = (app, de
         readStoredResult(row.result_json, row.id, request.log, ctx),
         sourceOfListRow(row),
       ),
+    );
+  });
+
+  // The upload as it was stored, for reading the contract itself: a citation in the chat links
+  // here with #page=N and the browser's own pdf viewer opens that page.
+  // Which file is read is decided by the row alone. The request gives an id, the row gives the
+  // name the upload was stored under (always <uuid>.<ext>, written by us), and UPLOAD_DIR gives
+  // the folder. No part of a path comes from the request.
+  app.get("/documents/:id/file", async (request, reply) => {
+    const { id } = IdParams.parse(request.params);
+    const row = getDocument(db, id);
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Document not found");
+
+    const root = resolve(deps.config.UPLOAD_DIR);
+    const path = resolve(root, row.storage_path);
+    // Cannot happen with rows this api wrote. A row from anywhere else must not turn this
+    // route into a way to read other files.
+    if (!path.startsWith(root + sep)) {
+      request.log.error({ documentId: id }, "stored path points outside the upload folder");
+      throw new HttpError(404, "NOT_FOUND", "Document not found");
+    }
+    let size: number;
+    try {
+      size = (await stat(path)).size;
+    } catch {
+      request.log.warn({ documentId: id }, "the stored file of a document is missing");
+      throw new HttpError(404, "FILE_MISSING", "The stored file of this document is gone");
+    }
+    return (
+      reply
+        // The type that was detected from the bytes at upload, not one a client claimed.
+        .header("content-type", row.mime)
+        .header("content-length", size)
+        .header("content-disposition", inlineDisposition(row.original_name))
+        // The browser must show it as that type or not at all.
+        .header("x-content-type-options", "nosniff")
+        // A stored upload never changes, but it is a contract: not for a shared cache.
+        .header("cache-control", "private, max-age=3600")
+        .send(createReadStream(path))
     );
   });
 

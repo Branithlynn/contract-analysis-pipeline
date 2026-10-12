@@ -123,7 +123,8 @@ describe("createThreadStore", () => {
     });
     await secondTurn.result;
 
-    const seen = secondTurn.model.seen.at(-1)?.map((m) => [m.getType(), m.text]);
+    // The first call of the second question: what the thread held, and the question.
+    const seen = secondTurn.model.seen[0]?.map((m) => [m.getType(), m.text]);
     expect(seen?.slice(1)).toEqual([
       ["human", "Which contracts renew?"],
       ["ai", "Only the msa renews."],

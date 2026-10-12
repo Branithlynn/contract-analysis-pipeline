@@ -14,6 +14,7 @@ import {
   type Db,
   type ModelSelection,
 } from "@nexus/shared/node";
+import { isLookupReminder } from "../ask/reminder.js";
 import { ScriptedChatModel, type ChatScript } from "../ask/scripted-model.js";
 import type { JobQueue } from "../queue.js";
 import { buildServer } from "../server.js";
@@ -119,6 +120,16 @@ export async function setupAskServer(opts: AskServerOptions = {}): Promise<AskSe
   // Every text the model was ever given, system prompt and tool results included.
   const everythingSeen = () => (model?.seen ?? []).flat().map((m) => m.text);
   return { app, db, ask, answer, askStream, get, model, created, lines, everythingSeen };
+}
+
+// What the model was sent when the newest question first reached it: the history and the
+// question, before a reminder or any tool result of this question was added.
+export function questionCall(model: ScriptedChatModel | undefined): BaseMessage[] {
+  const call = model?.seen.findLast((messages) => {
+    const last = messages.at(-1);
+    return last?.getType() === "human" && !isLookupReminder(last);
+  });
+  return call ?? [];
 }
 
 export const texts = (messages: readonly BaseMessage[] | undefined) =>

@@ -152,7 +152,8 @@ function keyFields(row: ContractRow) {
     vendor_name: result.vendor_name.value,
     total_contract_value: result.total_contract_value.value,
     auto_renewal: result.auto_renewal.value,
-    expires: termEnd(result),
+    // The end of the term the contract is in today.
+    current_term_end: termEnd(result),
     notice_deadline: result.derived.notice_deadline,
     days_until_notice_deadline: result.derived.days_until_notice_deadline,
     governing_law: result.governing_law.value,
@@ -160,6 +161,26 @@ function keyFields(row: ContractRow) {
     max_risk_severity: maxSeverity(result),
     needs_review: row.needs_review,
   };
+}
+
+// Soonest notice deadline first, contracts without one last. Sorted here so that "which one is
+// due first" is reading the first row and not something a small model has to work out from dates.
+// A deadline that has passed sorts before the upcoming ones, which is where a reader wants it.
+function byNoticeDeadline(a: ContractRow, b: ContractRow): number {
+  const left = a.result.derived.notice_deadline;
+  const right = b.result.derived.notice_deadline;
+  if (left === right) return a.file_name.localeCompare(b.file_name);
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left < right ? -1 : 1;
+}
+
+// The answer to the most common question, spelled out: the next deadline that can still be met.
+function nearestNoticeDeadline(sorted: readonly ContractRow[]): string {
+  const next = sorted.find((row) => (row.result.derived.days_until_notice_deadline ?? -1) >= 0);
+  if (next === undefined) return "nearest notice deadline: none upcoming among these contracts";
+  const { notice_deadline: date, days_until_notice_deadline: days } = next.result.derived;
+  return `nearest notice deadline: ${String(date)} (in ${String(days)} days), ${next.file_name}`;
 }
 
 function contractDetail(row: ContractRow) {
@@ -268,9 +289,12 @@ export function createAskTools(deps: AskToolDeps) {
   const findContracts = tool(
     (filters) => {
       const all = contracts();
-      const found = all.filter((row) => matches(row, filters));
+      const found = all.filter((row) => matches(row, filters)).sort(byNoticeDeadline);
       return reply({
         summary: `${String(found.length)} of ${String(all.length)} contracts match`,
+        // First, so it is read before the rows.
+        nearest_notice_deadline: nearestNoticeDeadline(found),
+        sorted_by: "notice_deadline, soonest first, contracts without one last",
         total_matching: found.length,
         // The model has to know when it is not looking at all of them.
         shown: Math.min(found.length, MAX_CONTRACTS),
@@ -283,7 +307,9 @@ export function createAskTools(deps: AskToolDeps) {
         "List contracts by their extracted fields and dates. Use it for questions about which or " +
         "how many contracts match a condition: renewal, notice deadlines, expiry, value, governing " +
         "law, risk categories, review status. All filters are optional and combine with AND; no " +
-        "filters lists every contract. The dates are computed in code, do not recompute them. " +
+        "filters lists every contract. The result is sorted by notice deadline, soonest first, " +
+        "and names the nearest one at the top. The dates and day counts are computed in code, " +
+        "do not recompute or re-sort them. " +
         "Cite a value from the result as [contract:<id>].",
       schema: Filters,
     },

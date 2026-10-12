@@ -2,14 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createLogger, LlmError, MockEmbedder, type Db, type Embedder } from "@nexus/shared/node";
 import { readContext } from "../services/dto.js";
 import {
+  addCompleted,
   INJECTED,
   MSA,
   ORDER,
   ORDER_LIABILITY,
   chunkIdOf,
+  resultWithNoticeIn,
   seedContracts,
 } from "../test-support/ask.js";
-import { addDays, NOW } from "../test-support/fixtures.js";
+import { addDays, docId, NOW } from "../test-support/fixtures.js";
 import { createAskTools, summaryOf, TOOL_RESULT_BUDGET_CHARS, wrapToolResult } from "./tools.js";
 
 let db: Db;
@@ -60,7 +62,7 @@ describe("find_contracts", () => {
       vendor_name: "Acme Cloud Ltd",
       total_contract_value: { amount: 120000, currency: "USD" },
       auto_renewal: true,
-      expires: "2026-07-11",
+      current_term_end: "2026-07-11",
       // Computed for today (the pinned clock), not the stale stored value.
       notice_deadline: addDays(10),
       days_until_notice_deadline: 10,
@@ -103,6 +105,80 @@ describe("find_contracts", () => {
   it("leaves a contract out of a date filter when it has no such date", async () => {
     // The order has no notice period, so no notice deadline in either direction.
     expect(await idsFor({ notice_deadline_after: "2000-01-01" })).toEqual([MSA]);
+  });
+});
+
+describe("find_contracts: order", () => {
+  const SOON = docId(3);
+  const PASSED = docId(4);
+
+  beforeEach(() => {
+    // Added after the others and with names that sort last, so neither the order of insertion
+    // nor the alphabet gives the expected order by accident.
+    addCompleted(db, SOON, "z-soon.pdf", resultWithNoticeIn(3, "Soon Ltd"));
+    addCompleted(db, PASSED, "y-passed.pdf", resultWithNoticeIn(-20, "Passed Ltd"));
+  });
+
+  it("sorts by notice deadline, soonest first, and puts contracts without one last", async () => {
+    const { json } = await tools().find({});
+
+    const rows = json["contracts"] as {
+      id: string;
+      notice_deadline: string | null;
+      days_until_notice_deadline: number | null;
+      current_term_end: string | null;
+    }[];
+    expect(rows.map((r) => [r.id, r.notice_deadline, r.days_until_notice_deadline])).toEqual([
+      [PASSED, addDays(-20), -20],
+      [SOON, addDays(3), 3],
+      [MSA, addDays(10), 10],
+      // No notice period, so no deadline.
+      [ORDER, null, null],
+    ]);
+    expect(rows.every((r) => r.current_term_end !== null)).toBe(true);
+    expect(rows[1]?.current_term_end).toBe(addDays(33));
+    expect(json["sorted_by"]).toBe("notice_deadline, soonest first, contracts without one last");
+  });
+
+  it("names the nearest deadline that can still be met, before the rows", async () => {
+    const { text, json } = await tools().find({});
+
+    expect(json["nearest_notice_deadline"]).toBe(
+      `nearest notice deadline: ${addDays(3)} (in 3 days), z-soon.pdf`,
+    );
+    // The model reads top to bottom: the line comes before any contract.
+    expect(text.indexOf("nearest notice deadline")).toBeLessThan(text.indexOf('"contracts"'));
+  });
+
+  it("keeps the order and the line within what a filter matched", async () => {
+    const { json } = await tools().find({ notice_deadline_after: addDays(5) });
+
+    expect((json["contracts"] as { id: string }[]).map((r) => r.id)).toEqual([MSA]);
+    expect(json["nearest_notice_deadline"]).toBe(
+      `nearest notice deadline: ${addDays(10)} (in 10 days), msa.pdf`,
+    );
+  });
+
+  it("says so when no deadline is still ahead", async () => {
+    const passed = await tools().find({ notice_deadline_before: addDays(-1) });
+    const none = await tools().find({ needs_review: true });
+
+    for (const { json } of [passed, none]) {
+      expect(json["nearest_notice_deadline"]).toBe(
+        "nearest notice deadline: none upcoming among these contracts",
+      );
+    }
+    expect((passed.json["contracts"] as { id: string }[]).map((r) => r.id)).toEqual([PASSED]);
+  });
+
+  it("counts a deadline that is today as one that can still be met", async () => {
+    addCompleted(db, docId(5), "today.pdf", resultWithNoticeIn(0, "Today Ltd"));
+
+    const { json } = await tools().find({});
+
+    expect(json["nearest_notice_deadline"]).toBe(
+      `nearest notice deadline: ${addDays(0)} (in 0 days), today.pdf`,
+    );
   });
 });
 

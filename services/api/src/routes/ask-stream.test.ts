@@ -20,6 +20,7 @@ import {
 import {
   closeAskServers,
   parseStream,
+  questionCall,
   setupAskServer as setup,
 } from "../test-support/ask-server.js";
 import { docId, okQueue } from "../test-support/fixtures.js";
@@ -203,9 +204,13 @@ describe("POST /api/ask/stream", () => {
 
   it("sends a comment line while nothing else happens, so a proxy keeps the connection", async () => {
     let finish: (message: AIMessage) => void = () => undefined;
+    let held = false;
     // The default is 15s.
     const fast = await setup({
-      script: () => new Promise<AIMessage>((resolve) => (finish = resolve)),
+      script: () =>
+        held
+          ? new AIMessage("Done.")
+          : new Promise<AIMessage>((resolve) => ((held = true), (finish = resolve))),
       heartbeatMs: 20,
     });
     const pending = fast.askStream({ question: "Slow" });
@@ -260,7 +265,7 @@ describe("POST /api/ask/stream over a real connection", () => {
     expect(ctx.lines.some((line) => line["msg"] === "question timed out")).toBe(false);
     const next = await ctx.answer({ question: "Still there?", thread_id: "left" });
     expect(next.answer).toBe("Yes.");
-    expect(ctx.model?.seen.at(-1)?.map((m) => m.getType())).toEqual(["system", "human"]);
+    expect(questionCall(ctx.model).map((m) => m.getType())).toEqual(["system", "human"]);
     await ctx.app.close();
   });
 });

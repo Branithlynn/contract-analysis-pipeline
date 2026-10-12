@@ -515,7 +515,13 @@ function Body({ doc, onSelect, passage, onDismissPassage, onAsk }: BodyProps) {
 
   return (
     <div className="detail-body">
-      {passage !== null && <CitedPassage passage={passage} onDismiss={onDismissPassage} />}
+      {passage !== null && (
+        <CitedPassage
+          passage={passage}
+          document={{ id: doc.id, mime: doc.mime }}
+          onDismiss={onDismissPassage}
+        />
+      )}
       <div className="detail-status">
         <StatusChip doc={doc} />
         {doc.result_model !== null && doc.result_provider !== null && (

@@ -7,6 +7,7 @@ import {
   citationTitle,
   emptyChat,
   failureText,
+  fileLink,
   highlightQuote,
   stepLabel,
   stepLines,
@@ -79,6 +80,10 @@ describe("stepLabel", () => {
     expect(stepLabel("search_clauses", {})).toBe("Searching clauses");
     expect(stepLabel("find_contracts", { auto_renewal: true })).toBe("Checking the contracts");
     expect(stepLabel("get_contract", { id: DOC })).toBe("Reading a contract");
+  });
+
+  it("has words for the reply that was sent back to look it up", () => {
+    expect(stepLabel("lookup_reminder", {})).toBe("Asked to look it up first");
   });
 
   it("shows a tool it does not know by name", () => {
@@ -487,11 +492,11 @@ describe("citations", () => {
 
     expect(citationTarget(quoted)).toEqual({
       documentId: DOC,
-      passage: { chunkId: 7, quote: "limited to the fees" },
+      passage: { chunkId: 7, quote: "limited to the fees", page: 5 },
     });
     expect(citationTarget(citation())).toEqual({
       documentId: DOC,
-      passage: { chunkId: 7, quote: null },
+      passage: { chunkId: 7, quote: null, page: 5 },
     });
   });
 
@@ -499,7 +504,12 @@ describe("citations", () => {
     expect(citationTarget(citation({ status: "quote_not_found" }))?.passage).toEqual({
       chunkId: 7,
       quote: null,
+      page: 5,
     });
+    // A docx has no pages.
+    expect(
+      citationTarget(citation({ page_start: null, page_end: null }))?.passage?.page,
+    ).toBeNull();
   });
 
   it("opens only the document for a contract citation, and nothing for one that was not found", () => {
@@ -519,6 +529,37 @@ describe("citations", () => {
       ]),
     ).toBe(2);
     expect(stepLines([])).toEqual([]);
+  });
+});
+
+describe("fileLink", () => {
+  const URL = "/api/documents/abc/file";
+  const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+  it("opens a pdf at the cited page, in the browser's viewer", () => {
+    expect(fileLink(URL, "application/pdf", 12)).toEqual({
+      href: "/api/documents/abc/file#page=12",
+      label: "Open page 12",
+      download: false,
+    });
+  });
+
+  it("opens a pdf at its start when the page is not known", () => {
+    expect(fileLink(URL, "application/pdf", null)).toEqual({
+      href: URL,
+      label: "Open the document",
+      download: false,
+    });
+  });
+
+  it("offers a docx as a download, it has no pages to open", () => {
+    expect(fileLink(URL, DOCX, null)).toEqual({
+      href: URL,
+      label: "Download the document",
+      download: true,
+    });
+    // A page number on something that is not a pdf is ignored.
+    expect(fileLink(URL, DOCX, 3).href).toBe(URL);
   });
 });
 

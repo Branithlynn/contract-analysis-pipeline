@@ -137,6 +137,11 @@ export function retryDocument(id: string): Promise<DocumentSummary> {
   });
 }
 
+// The upload as it was stored. A link target, not something this page fetches.
+export function documentFileUrl(id: string): string {
+  return `${DOCUMENTS}/${encodeURIComponent(id)}/file`;
+}
+
 export function exportCsvUrl(): string {
   return `${DOCUMENTS}/export.csv`;
 }

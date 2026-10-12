@@ -1,6 +1,7 @@
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it } from "vitest";
 import { ErrorBodySchema } from "@nexus/shared";
+import { isLookupReminder, LOOKUP_REMINDER } from "../ask/reminder.js";
 import { currentTurn, toolCall, type ChatScript } from "../ask/scripted-model.js";
 import type { ModelCatalog } from "../services/models.js";
 import {
@@ -13,7 +14,13 @@ import {
   ORDER_LIABILITY,
   TERMINATION,
 } from "../test-support/ask.js";
-import { closeAskServers, setupAskServer as setup, texts } from "../test-support/ask-server.js";
+import {
+  closeAskServers,
+  parseStream,
+  questionCall,
+  setupAskServer as setup,
+  texts,
+} from "../test-support/ask-server.js";
 import { okQueue } from "../test-support/fixtures.js";
 
 afterEach(closeAskServers);
@@ -212,7 +219,7 @@ describe("POST /api/ask: limits", () => {
     const second = await answer({ question: "Still there?", thread_id: first.thread_id });
 
     expect(second.answer).toBe("Fine now.");
-    expect(texts(model?.seen.at(-1)).slice(1)).toEqual([["human", "Still there?"]]);
+    expect(texts(questionCall(model)).slice(1)).toEqual([["human", "Still there?"]]);
   });
 
   it("answers 504 with the steps so far when the whole question takes too long", async () => {
@@ -252,7 +259,7 @@ describe("POST /api/ask: limits", () => {
 
     // The unanswered question is gone from the thread.
     await answer({ question: "Quick one", thread_id: "t-timeout" });
-    expect(texts(model?.seen.at(-1)).slice(1)).toEqual([["human", "Quick one"]]);
+    expect(texts(questionCall(model)).slice(1)).toEqual([["human", "Quick one"]]);
   });
 });
 
@@ -329,7 +336,7 @@ describe("POST /api/ask: thread memory", () => {
 
     expect(second.thread_id).toBe(first.thread_id);
     // The question and the answer, not the tool call and its result in between.
-    expect(texts(model?.seen.at(-1)).slice(1)).toEqual([
+    expect(texts(questionCall(model)).slice(1)).toEqual([
       ["human", "Which contracts renew?"],
       ["ai", `Only the msa [contract:${MSA}].`],
       ["human", "When is its notice due?"],
@@ -344,13 +351,18 @@ describe("POST /api/ask: thread memory", () => {
     await answer({ question: "Which contracts renew?", thread_id: "thread-a" });
     await answer({ question: "When is its notice due?", thread_id: "thread-b" });
 
-    expect(texts(model?.seen.at(-1)).slice(1)).toEqual([["human", "When is its notice due?"]]);
+    expect(texts(questionCall(model)).slice(1)).toEqual([["human", "When is its notice due?"]]);
   });
 
   it("refuses a second question on a thread that is still answering", async () => {
     let release: (message: AIMessage) => void = () => undefined;
+    let held = false;
     const { ask } = await setup({
-      script: () => new Promise<AIMessage>((resolve) => (release = resolve)),
+      // Held once. The reply is then sent back for a lookup, and that call answers at once.
+      script: () =>
+        held
+          ? new AIMessage("Done.")
+          : new Promise<AIMessage>((resolve) => ((held = true), (release = resolve))),
     });
 
     const first = ask({ question: "One", thread_id: "busy-thread" });
@@ -498,5 +510,152 @@ describe("POST /api/ask: ollama shares the gpu with the worker", () => {
     const body = await answer({ question: "Anything", provider: "openai", model: "gpt-5-mini" });
 
     expect(body.answer).toBe("Done.");
+  });
+});
+
+describe("POST /api/ask: no lookup, no answer", () => {
+  const reminded = (messages: readonly BaseMessage[]) => messages.some(isLookupReminder);
+  // Answers from thin air first, and looks it up once it is told to.
+  const lazy: ChatScript = (messages) => {
+    if (!reminded(messages)) return new AIMessage("Two contracts renew.");
+    return currentTurn(messages).toolResults.length === 0
+      ? toolCall("find_contracts", { auto_renewal: true })
+      : new AIMessage(`Only msa.pdf renews [contract:${MSA}].`);
+  };
+
+  it("sends a first reply without a tool call back once, and takes the looked up answer", async () => {
+    const { answer, model } = await setup({ script: lazy });
+
+    const body = await answer({ question: "Which contracts renew?" });
+
+    expect(body.answer).toBe(`Only msa.pdf renews [contract:${MSA}].`);
+    expect(body.citations).toMatchObject([{ id: MSA, status: "verified" }]);
+    // The reminder is part of how the answer came about, so the trace shows it.
+    expect(body.steps).toEqual([
+      {
+        tool: "lookup_reminder",
+        input: {},
+        result: "the first reply used no tool, so it was sent back once",
+      },
+      { tool: "find_contracts", input: { auto_renewal: true }, result: "1 of 2 contracts match" },
+    ]);
+    expect(model?.seen).toHaveLength(3);
+    // The second call got its own first reply and the reminder after it.
+    expect(texts(model?.seen[1]).slice(1)).toEqual([
+      ["human", "Which contracts renew?"],
+      ["ai", "Two contracts renew."],
+      ["human", LOOKUP_REMINDER],
+    ]);
+    expect(LOOKUP_REMINDER).toMatch(/look it up with the tools before answering/);
+  });
+
+  it("does not send a reply back that asked for a tool", async () => {
+    const { answer, model, everythingSeen } = await setup({
+      script: (messages) =>
+        currentTurn(messages).toolResults.length === 0
+          ? toolCall("find_contracts", {})
+          : new AIMessage("Two."),
+    });
+
+    const body = await answer({ question: "How many contracts are there?" });
+
+    expect(model?.seen).toHaveLength(2);
+    expect(body.steps.map((s) => s.tool)).toEqual(["find_contracts"]);
+    expect(everythingSeen()).not.toContain(LOOKUP_REMINDER);
+  });
+
+  it("accepts a second reply without a tool call: the question may not need one", async () => {
+    const { answer, model } = await setup({ script: () => new AIMessage("You are welcome.") });
+
+    const body = await answer({ question: "Thanks!" });
+
+    expect(body).toMatchObject({ stopped: "done", answer: "You are welcome.", citations: [] });
+    expect(model?.seen).toHaveLength(2);
+    expect(body.steps.map((s) => s.tool)).toEqual(["lookup_reminder"]);
+  });
+
+  it("counts the reply that was sent back as a step", async () => {
+    // Two steps: the first reply, and the lookup it is sent back for. None is left for an answer.
+    const { answer, model } = await setup({ env: { ASK_MAX_STEPS: "2" }, script: lazy });
+
+    const body = await answer({ question: "Which contracts renew?" });
+
+    expect(body).toMatchObject({ stopped: "step_limit", answer: null });
+    expect(model?.seen).toHaveLength(2);
+    expect(body.steps.map((s) => [s.tool, s.result])).toEqual([
+      ["lookup_reminder", "the first reply used no tool, so it was sent back once"],
+      ["find_contracts", "not run"],
+    ]);
+
+    // With a third step there is room for the answer.
+    const roomy = await setup({ env: { ASK_MAX_STEPS: "3" }, script: lazy });
+    expect((await roomy.answer({ question: "Which contracts renew?" })).stopped).toBe("done");
+  });
+
+  it("does not send anything back when one step is all there is", async () => {
+    const { answer, model } = await setup({
+      env: { ASK_MAX_STEPS: "1" },
+      script: () => new AIMessage("Two contracts renew."),
+    });
+
+    const body = await answer({ question: "Which contracts renew?" });
+
+    expect(body).toMatchObject({ stopped: "done", answer: "Two contracts renew.", steps: [] });
+    expect(model?.seen).toHaveLength(1);
+  });
+
+  it("keeps neither the reminder nor the reply it answered in the thread", async () => {
+    const { answer, model, get } = await setup({ script: lazy });
+    const first = await answer({ question: "Which contracts renew?" });
+
+    await answer({ question: "And when?", thread_id: first.thread_id });
+
+    expect(texts(questionCall(model)).slice(1)).toEqual([
+      ["human", "Which contracts renew?"],
+      ["ai", `Only msa.pdf renews [contract:${MSA}].`],
+      ["human", "And when?"],
+    ]);
+    const stored = (await get(`/api/threads/${first.thread_id}`)).json<{
+      messages: { role: string; text: string; steps?: { tool: string }[] }[];
+    }>();
+    expect(stored.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(stored.messages.some((m) => m.text === LOOKUP_REMINDER)).toBe(false);
+    // The trace of the answer still says that it was sent back.
+    expect(stored.messages[1]?.steps?.map((s) => s.tool)).toEqual([
+      "lookup_reminder",
+      "find_contracts",
+    ]);
+  });
+
+  it("shows the reminder as a step of the stream", async () => {
+    const { askStream } = await setup({ script: lazy });
+
+    const events = parseStream((await askStream({ question: "Which contracts renew?" })).payload);
+
+    expect(events.slice(1, 3)).toEqual([
+      { event: "step", data: { type: "tool_call", tool: "lookup_reminder", input: {} } },
+      {
+        event: "step",
+        data: {
+          type: "tool_result",
+          tool: "lookup_reminder",
+          result: "the first reply used no tool, so it was sent back once",
+        },
+      },
+    ]);
+    expect(events.at(-1)?.event).toBe("done");
+  });
+});
+
+describe("POST /api/ask: the prompt", () => {
+  it("asks for the value in the sentence and the citation after it", async () => {
+    const { answer, model } = await setup({ script: () => new AIMessage("Done.") });
+
+    await answer({ question: "Anything" });
+
+    const system = model?.seen[0]?.[0]?.text ?? "";
+    expect(system).toMatch(/Write the value itself in the sentence and put the citation after it/);
+    expect(system).toMatch(/Never put a citation where the value should be/);
+    expect(system).toContain("2026-11-15 [contract:<id>]");
   });
 });

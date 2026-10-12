@@ -1617,6 +1617,15 @@ summary {
   font-size: var(--text-md);
 }
 
+.passage-link {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-half);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
 .passage-text {
   max-height: 320px;
   margin: 0;
