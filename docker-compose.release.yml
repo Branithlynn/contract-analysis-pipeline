@@ -1,0 +1,137 @@
+name: nexus-doc-pipeline
+
+# The same stack as docker-compose.yml, but with the images the release workflow pushed to ghcr
+# instead of a build. It needs nothing from the repo: this file and an optional .env next to it.
+# APP_VERSION picks the image tag (1.0.0 for the v1.0.0 release), without it you get latest.
+
+# These win over whatever .env says. .env.example is written for npm run dev, where paths are
+# relative and everything is on localhost. Provider, model, keys and timeouts still come from .env.
+x-app-env: &app-env
+  NODE_ENV: production
+  # nginx, the port mapping and the healthcheck all assume 3000.
+  API_PORT: 3000
+  DATABASE_PATH: /data/app.db
+  UPLOAD_DIR: /data/uploads
+  REDIS_URL: redis://redis:6379
+  # OLLAMA_URL in .env means localhost for npm run dev, which inside a container is the container
+  # itself. So compose reads its own variable and defaults to the ollama service.
+  OLLAMA_URL: ${DOCKER_OLLAMA_URL:-http://ollama:11434}
+  # env_file values ignore shell variables, so these are interpolated instead: compose reads
+  # the shell first, then .env, then the default. The defaults repeat the ones in config.ts.
+  LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+  LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
+  PROMPT_VERSION: ${PROMPT_VERSION:-extract.v3}
+
+services:
+  redis:
+    restart: unless-stopped
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    restart: unless-stopped
+    image: ghcr.io/branithlynn/contract-analysis-pipeline-api:${APP_VERSION:-latest}
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    volumes:
+      # Named volume, never a bind mount to the Windows filesystem: sqlite WAL needs a real linux fs.
+      - app-data:/data
+    ports:
+      - "3000:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # node instead of curl, the slim image has no curl.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # With a local model run one worker. The one-call-at-a-time rule is per process, so a second
+  # worker container would put two calls on one gpu again.
+  worker:
+    restart: unless-stopped
+    image: ghcr.io/branithlynn/contract-analysis-pipeline-worker:${APP_VERSION:-latest}
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    volumes:
+      - app-data:/data
+    # The worker's own shutdown timeout is LLM_TIMEOUT_MS + 30s (330s with defaults). Docker has to
+    # wait longer than that or it kills the worker mid job. Raise both together.
+    stop_grace_period: ${WORKER_STOP_GRACE:-6m}
+    # Lets DOCKER_OLLAMA_URL=http://host.docker.internal:11434 (native ollama) work on linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      api:
+        condition: service_healthy
+      # required: false so the worker still starts when the ollama profile is off.
+      ollama-pull:
+        condition: service_completed_successfully
+        required: false
+
+  web:
+    restart: unless-stopped
+    image: ghcr.io/branithlynn/contract-analysis-pipeline-web:${APP_VERSION:-latest}
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # A profile, so people with an api key don't download gigabytes of model.
+  ollama:
+    image: ollama/ollama:0.40.2
+    profiles: ["ollama"]
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # GPU: uncomment this block (needs the NVIDIA Container Toolkit on the host).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  ollama-pull:
+    image: ollama/ollama:0.40.2
+    profiles: ["ollama"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      # Same interpolation as the anchor, not env_file, so the model pulled is the model the
+      # worker asks for, with no .env at all too.
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
+    # $$ so compose leaves it alone and the shell in the container expands it.
+    entrypoint: ["sh", "-c", 'ollama pull "$$LLM_MODEL"']
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  app-data:
+  redis-data:
+  ollama-models:
