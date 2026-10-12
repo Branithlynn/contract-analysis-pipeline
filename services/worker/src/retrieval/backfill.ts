@@ -14,11 +14,15 @@ export interface BackfillResult {
 // ones processed before the index existed, the ones whose indexing failed, and the ones indexed
 // with another model. The parsed text is not stored anywhere, so each file is parsed again.
 // No llm call and no change to the extraction. One document failing does not stop the rest.
-export async function backfillIndex(deps: IndexDeps): Promise<BackfillResult> {
+export async function backfillIndex(
+  deps: IndexDeps,
+  // all: also the documents that are indexed, for rebuilding after the chunking changed.
+  opts: { all?: boolean } = {},
+): Promise<BackfillResult> {
   const { db, config, logger, embedder } = deps;
   const result: BackfillResult = { indexed: [], failed: [] };
 
-  for (const doc of listDocumentsToIndex(db, embedder.model)) {
+  for (const doc of listDocumentsToIndex(db, embedder.model, opts)) {
     const log = logger.child({ documentId: doc.id });
     try {
       const path = resolve(config.UPLOAD_DIR, doc.storage_path);

@@ -68,11 +68,30 @@ describe("backfillIndex", () => {
         index_error: null,
       });
       expect(listRetrievalChunks(deps.db, id)).toMatchObject([
-        { page: 1, embed_model: "mock", embed_dim: 64 },
+        { page_start: 1, page_end: 2, embed_model: "mock", embed_dim: 64 },
       ]);
     }
     // Nothing left to do on a second run.
     expect(await backfillIndex(deps)).toEqual({ indexed: [], failed: [] });
+  });
+
+  it("with all, indexes documents again that already have an index", async () => {
+    const { deps } = makeDeps();
+    const id = seedCompleted(deps, 1);
+    await backfillIndex(deps);
+    // What a chunk written before page ranges existed looks like after the migration.
+    deps.db.prepare("UPDATE retrieval_chunks SET page_end = page_start, page_breaks = NULL").run();
+    expect(await backfillIndex(deps)).toEqual({ indexed: [], failed: [] });
+
+    const result = await backfillIndex(deps, { all: true });
+
+    expect(result.indexed.map((d) => d.id)).toEqual([id]);
+    const [row] = listRetrievalChunks(deps.db, id);
+    expect(row).toMatchObject({ page_start: 1, page_end: 2 });
+    // The second page starts inside the chunk, and now the chunk says where.
+    expect(JSON.parse(row?.page_breaks ?? "[]")).toEqual([
+      { page: 2, offset: expect.any(Number) as number },
+    ]);
   });
 
   it("leaves indexed documents, duplicates and documents that are not completed alone", async () => {

@@ -30,6 +30,8 @@
     "samples": "tsx scripts/make-samples.ts",
     "preeval": "tsc -b",
     "eval": "tsx evals/run.ts",
+    "preeval:retrieval": "tsc -b",
+    "eval:retrieval": "tsx evals/ask/retrieval.ts",
     "preeval:rescore": "tsc -b",
     "eval:rescore": "tsx evals/rescore.ts",
     "preindex:backfill": "tsc -b",

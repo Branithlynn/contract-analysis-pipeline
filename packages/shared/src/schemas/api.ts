@@ -100,14 +100,29 @@ export const UploadResponseSchema = z.object({
 });
 export type UploadResponse = z.infer<typeof UploadResponseSchema>;
 
+// vector: by meaning, through the embeddings. keyword: by the words, full text with bm25.
+// hybrid: both, with the two rankings fused.
+export const SearchMode = z.enum(["vector", "keyword", "hybrid"]);
+export type SearchMode = z.infer<typeof SearchMode>;
+
+// A later page starting inside a chunk, at this character offset of its text.
+export const PageBreakSchema = z.object({
+  page: z.int().positive(),
+  offset: z.int().nonnegative(),
+});
+
 // One retrieval chunk from GET /api/search.
 export const SearchHitSchema = z.object({
   document_id: z.string(),
   file_name: z.string(),
-  // Null for docx, which has no fixed pages.
-  page: z.int().nullable(),
+  // The pages the chunk's text is on. Both null for docx, which has no fixed pages.
+  page_start: z.int().nullable(),
+  page_end: z.int().nullable(),
+  // For pagesOfQuote, which gives the exact page of a quote from the text.
+  page_breaks: z.array(PageBreakSchema),
   text: z.string(),
-  // Cosine similarity between the query and the chunk, higher is closer.
+  // Higher is closer. Cosine similarity in vector mode, negated bm25 in keyword mode, the fused
+  // rank score in hybrid mode, so only comparable within one response.
   score: z.number(),
 });
 export type SearchHit = z.infer<typeof SearchHitSchema>;

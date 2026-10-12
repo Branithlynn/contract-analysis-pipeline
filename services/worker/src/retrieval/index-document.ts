@@ -52,7 +52,9 @@ export async function indexDocument(
       }
       return {
         chunk_index: chunk.index,
-        page: chunk.page,
+        page_start: chunk.page_start,
+        page_end: chunk.page_end,
+        page_breaks: chunk.page_breaks,
         text: chunk.text,
         injection_flagged: flagged[i] === true,
         embedding,

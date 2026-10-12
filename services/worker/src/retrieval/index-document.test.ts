@@ -45,7 +45,16 @@ describe("indexDocument", () => {
       embedDim: 64,
     });
     expect(rows.map((r) => r.chunk_index)).toEqual(rows.map((_, i) => i));
-    expect(new Set(rows.map((r) => r.page))).toEqual(new Set([1, 2, 3]));
+    expect(rows[0]?.page_start).toBe(1);
+    expect(rows.at(-1)?.page_end).toBe(3);
+    for (const row of rows) {
+      expect(row.page_end).toBeGreaterThanOrEqual(row.page_start ?? 0);
+      // Stored as json, one entry per later page that starts inside the chunk.
+      const breaks = JSON.parse(row.page_breaks ?? "null") as { page: number }[];
+      expect(breaks.map((b) => b.page)).toEqual(
+        row.page_start === row.page_end ? [] : [row.page_end],
+      );
+    }
     for (const row of rows) {
       expect(row).toMatchObject({ embed_model: "mock", embed_dim: 64, injection_flagged: 0 });
       expect(row.text.length).toBeLessThanOrEqual(1200);

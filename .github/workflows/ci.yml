@@ -45,6 +45,8 @@ jobs:
       - run: npm run test:e2e
       # Exits 0 on low scores, which the mock has on purpose. Non-zero only when the run breaks.
       - run: npm run eval -- --provider mock
+      # Same for search: the mock embedder scores low, the step only fails when the run breaks.
+      - run: npm run eval:retrieval -- --embed-provider mock
 
   docker:
     runs-on: ubuntu-latest

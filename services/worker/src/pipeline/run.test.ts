@@ -119,10 +119,17 @@ describe("processJob", () => {
       index_status: "indexed",
       index_error: null,
     });
-    // One short line per page, so the two pages fit one chunk. It starts on page 1.
+    // One short line per page, so the two pages fit one chunk, from page 1 to page 2.
     const chunks = listRetrievalChunks(deps.db, id);
     expect(chunks).toMatchObject([
-      { chunk_index: 0, page: 1, embed_model: "mock", embed_dim: 64, injection_flagged: 0 },
+      {
+        chunk_index: 0,
+        page_start: 1,
+        page_end: 2,
+        embed_model: "mock",
+        embed_dim: 64,
+        injection_flagged: 0,
+      },
     ]);
     expect(chunks[0]?.text).toContain(LINE);
     expect(lines).toContainEqual(

@@ -1,3 +1,4 @@
+import type { PageBreak } from "@nexus/shared";
 import { splitPages } from "../extraction/grounding.js";
 
 // Chunks for the search index. Not the extraction chunks: those are as large as the model's
@@ -6,8 +7,12 @@ import { splitPages } from "../extraction/grounding.js";
 
 export interface RetrievalChunk {
   index: number;
-  // The page the chunk's own text starts on. Null for docx, which has no fixed pages.
-  page: number | null;
+  // The pages the text is on, the repeated overlap at its start included. Both null for docx,
+  // which has no fixed pages.
+  page_start: number | null;
+  page_end: number | null;
+  // Where each later page begins in the text, for finding the exact page of a quote.
+  page_breaks: PageBreak[];
   // Document text only, without [[page N]] markers.
   text: string;
 }
@@ -103,6 +108,26 @@ function overlapOf(units: readonly Unit[], overlapChars: number): Unit[] {
   return [{ text: space >= 0 ? tail.slice(space + 1) : tail, lead: "", page: last.page }];
 }
 
+// The pages a chunk's units are on, and where in the rendered text each later page begins. The
+// offsets follow render(): a unit starts after its lead.
+function pagesOf(
+  units: readonly Unit[],
+): Pick<RetrievalChunk, "page_start" | "page_end" | "page_breaks"> {
+  const pageStart = units[0]?.page ?? null;
+  const breaks: PageBreak[] = [];
+  let page = pageStart;
+  let offset = 0;
+  units.forEach((unit, i) => {
+    if (i > 0) offset += unit.lead.length;
+    if (unit.page !== null && unit.page !== page) {
+      breaks.push({ page: unit.page, offset });
+      page = unit.page;
+    }
+    offset += unit.text.length;
+  });
+  return { page_start: pageStart, page_end: page, page_breaks: breaks };
+}
+
 export function chunkForRetrieval(
   fullText: string,
   maxChars: number = RETRIEVAL_CHUNK_CHARS,
@@ -123,8 +148,7 @@ export function chunkForRetrieval(
   let overlap = 0;
 
   const emit = (): void => {
-    const page = (current[overlap] ?? current[0])?.page ?? null;
-    chunks.push({ index: chunks.length, page, text: render(current) });
+    chunks.push({ index: chunks.length, ...pagesOf(current), text: render(current) });
   };
 
   for (const unit of toUnits(fullText, maxChars)) {

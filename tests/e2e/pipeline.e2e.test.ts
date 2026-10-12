@@ -257,7 +257,8 @@ describe.skipIf(problem !== null)("pipeline e2e", () => {
     expect(hits.length).toBeGreaterThan(0);
     for (const hit of hits) {
       expect(hit).toMatchObject({ document_id: firstId, file_name: "saas-subscription.pdf" });
-      expect(hit.page).toBeGreaterThanOrEqual(1);
+      expect(hit.page_start).toBeGreaterThanOrEqual(1);
+      expect(hit.page_end).toBeGreaterThanOrEqual(hit.page_start ?? 0);
     }
     expect(hits.some((hit) => hit.text.includes("Payment terms are Net 30"))).toBe(true);
   });

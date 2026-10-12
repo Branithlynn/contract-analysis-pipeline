@@ -112,6 +112,45 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_retrieval_chunks_model ON retrieval_chunks (embed_model, embed_dim);
     `,
   },
+  {
+    version: 3,
+    name: "chunk page ranges and full text search",
+    sql: `
+      -- A chunk can run over a page break. Chunks written before this get their one known page
+      -- as both ends and no breaks, which is right for most and one page short for the rest,
+      -- until the document is indexed again (npm run index:backfill -- --all).
+      ALTER TABLE retrieval_chunks RENAME COLUMN page TO page_start;
+      ALTER TABLE retrieval_chunks ADD COLUMN page_end INTEGER;
+      -- Json: [{"page": 4, "offset": 812}] for every later page that starts inside the text.
+      ALTER TABLE retrieval_chunks ADD COLUMN page_breaks TEXT;
+      UPDATE retrieval_chunks SET page_end = page_start;
+
+      -- Keyword search over the same chunks. An external content table: the text stays in
+      -- retrieval_chunks and this only holds the index. The triggers keep it in step with every
+      -- insert and delete, so indexing and the backfill fill it without knowing about it.
+      -- porter, so "charges" finds "charge" and "renewing" finds "renewal".
+      CREATE VIRTUAL TABLE retrieval_chunks_fts USING fts5(
+        text,
+        content = 'retrieval_chunks',
+        content_rowid = 'id',
+        tokenize = 'porter unicode61 remove_diacritics 2'
+      );
+      CREATE TRIGGER retrieval_chunks_fts_insert AFTER INSERT ON retrieval_chunks BEGIN
+        INSERT INTO retrieval_chunks_fts (rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER retrieval_chunks_fts_delete AFTER DELETE ON retrieval_chunks BEGIN
+        INSERT INTO retrieval_chunks_fts (retrieval_chunks_fts, rowid, text)
+          VALUES ('delete', old.id, old.text);
+      END;
+      CREATE TRIGGER retrieval_chunks_fts_update AFTER UPDATE OF text ON retrieval_chunks BEGIN
+        INSERT INTO retrieval_chunks_fts (retrieval_chunks_fts, rowid, text)
+          VALUES ('delete', old.id, old.text);
+        INSERT INTO retrieval_chunks_fts (rowid, text) VALUES (new.id, new.text);
+      END;
+      -- The chunks that are already there.
+      INSERT INTO retrieval_chunks_fts (retrieval_chunks_fts) VALUES ('rebuild');
+    `,
+  },
 ];
 
 export const LATEST_VERSION = Math.max(0, ...MIGRATIONS.map((m) => m.version));

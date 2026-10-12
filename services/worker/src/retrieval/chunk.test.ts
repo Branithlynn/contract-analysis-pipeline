@@ -1,3 +1,4 @@
+import { pagesOfQuote } from "@nexus/shared";
 import { describe, expect, it } from "vitest";
 import { chunkForRetrieval, RETRIEVAL_CHUNK_CHARS, RETRIEVAL_OVERLAP_CHARS } from "./chunk.js";
 
@@ -16,7 +17,15 @@ describe("chunkForRetrieval", () => {
   it("returns a short text as one chunk without the page marker", () => {
     const chunks = chunkForRetrieval("[[page 1]]\n1. Fees\n\nUSD 1,000 per month.");
 
-    expect(chunks).toEqual([{ index: 0, page: 1, text: "1. Fees\n\nUSD 1,000 per month." }]);
+    expect(chunks).toEqual([
+      {
+        index: 0,
+        page_start: 1,
+        page_end: 1,
+        page_breaks: [],
+        text: "1. Fees\n\nUSD 1,000 per month.",
+      },
+    ]);
   });
 
   it("returns nothing for text that is only whitespace and markers", () => {
@@ -89,29 +98,86 @@ describe("chunkForRetrieval", () => {
     expect(chunks.map((c) => c.text.length)).toEqual([1000, 1000, 1000]);
   });
 
-  it("gives every chunk the page its own text starts on", () => {
+  it("gives every chunk the pages its text is on, the overlap included", () => {
     const text = [1, 2, 3].map((n) => `[[page ${n}]]\n${paragraphs(4, `pg${n}p`)}`).join("\n\n");
 
     const chunks = chunkForRetrieval(text);
 
-    expect(new Set(chunks.map((c) => c.page))).toEqual(new Set([1, 2, 3]));
     for (const c of chunks) {
       expect(c.text).not.toContain("[[page");
-      // The first sentence may be overlap from the page before. The first new one decides.
+      // The sentences are labelled with their page, so the range can be read off the text.
       const labels = [...c.text.matchAll(/pg(\d)p\d+s\d+/g)].map((m) => Number(m[1]));
-      expect(labels).toContain(c.page);
-      expect(labels.filter((n) => n < (c.page ?? 0)).length).toBeLessThanOrEqual(2);
+      expect(c.page_start).toBe(Math.min(...labels));
+      expect(c.page_end).toBe(Math.max(...labels));
     }
+    expect(chunks[0]?.page_start).toBe(1);
+    expect(chunks.at(-1)?.page_end).toBe(3);
+    // Some chunk runs over each of the two page breaks.
+    expect(chunks.filter((c) => c.page_start !== c.page_end).length).toBeGreaterThanOrEqual(2);
     // Pages only go up.
-    const pages = chunks.map((c) => c.page ?? 0);
-    expect(pages).toEqual([...pages].sort((a, b) => a - b));
+    const starts = chunks.map((c) => c.page_start ?? 0);
+    expect(starts).toEqual([...starts].sort((a, b) => a - b));
   });
 
-  it("uses null as the page for text without markers, like docx", () => {
+  it("records where each later page begins inside the chunk text", () => {
+    const text = [1, 2, 3].map((n) => `[[page ${n}]]\n${paragraphs(4, `pg${n}p`)}`).join("\n\n");
+
+    for (const c of chunkForRetrieval(text)) {
+      expect(c.page_breaks.map((b) => b.page)).toEqual(
+        c.page_start === c.page_end ? [] : [c.page_end],
+      );
+      for (const br of c.page_breaks) {
+        // The break sits exactly on the first sentence of the new page.
+        expect(c.text.slice(br.offset)).toMatch(new RegExp(`^pg${String(br.page)}p0s0 `));
+        expect(c.text.slice(0, br.offset)).not.toContain(`pg${String(br.page)}p`);
+      }
+    }
+  });
+
+  it("puts several page breaks into one chunk when the pages are short", () => {
+    const page = (n: number) => `[[page ${n}]]\nClause ${n} is on page ${n}. It is short.`;
+    const [chunk, ...rest] = chunkForRetrieval([1, 2, 3, 4].map(page).join("\n\n"));
+
+    expect(rest).toEqual([]);
+    expect(chunk).toMatchObject({ page_start: 1, page_end: 4 });
+    expect(chunk?.page_breaks.map((b) => b.page)).toEqual([2, 3, 4]);
+    for (const br of chunk?.page_breaks ?? []) {
+      expect(chunk?.text.slice(br.offset)).toMatch(new RegExp(`^Clause ${String(br.page)} `));
+    }
+  });
+
+  it("lets the exact page of a quote be found: first page, a later page, across the break", () => {
+    const text = [
+      "[[page 7]]\n12. Fees\n\nThe fees are EUR 84,000 per year. Vendor may increase the Fees by up to 9%",
+      "[[page 8]]\nupon each renewal. Vendor shall tell Customer in writing.\n\n13. Term\n\nTwelve months.",
+    ].join("\n\n");
+    const [chunk] = chunkForRetrieval(text);
+    if (!chunk) throw new Error("no chunk");
+    expect(chunk).toMatchObject({ page_start: 7, page_end: 8 });
+
+    expect(pagesOfQuote(chunk, "The fees are EUR 84,000 per year.")).toEqual({
+      page_start: 7,
+      page_end: 7,
+    });
+    expect(pagesOfQuote(chunk, "Vendor shall tell Customer in writing.")).toEqual({
+      page_start: 8,
+      page_end: 8,
+    });
+    // The sentence starts at the bottom of page 7 and ends at the top of page 8.
+    expect(pagesOfQuote(chunk, "increase the Fees by up to 9% upon each renewal")).toEqual({
+      page_start: 7,
+      page_end: 8,
+    });
+  });
+
+  it("uses null pages and no breaks for text without markers, like docx", () => {
     const chunks = chunkForRetrieval(paragraphs(6));
 
     expect(chunks.length).toBeGreaterThan(1);
-    for (const c of chunks) expect(c.page).toBeNull();
+    for (const c of chunks) {
+      expect(c).toMatchObject({ page_start: null, page_end: null, page_breaks: [] });
+      expect(pagesOfQuote(c, c.text.slice(0, 40))).toBeNull();
+    }
   });
 
   it("is deterministic", () => {

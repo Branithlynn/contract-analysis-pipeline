@@ -1,0 +1,88 @@
+{
+  "corpus": [
+    "samples/generated/master-services-agreement.pdf",
+    "samples/generated/saas-subscription.pdf",
+    "samples/generated/hardware-supply.pdf",
+    "samples/generated/consulting-sow.docx",
+    "samples/generated/mutual-nda.docx"
+  ],
+  "questions": [
+    {
+      "id": "msa-work-product",
+      "question": "vendor owns work product nexus paid for",
+      "document": "master-services-agreement.pdf",
+      "page": 12,
+      "quote": "is owned exclusively by Vendor from the moment it is created"
+    },
+    {
+      "id": "msa-vendor-exit",
+      "question": "can the vendor walk away from the agreement without a reason",
+      "document": "master-services-agreement.pdf",
+      "page": 11,
+      "quote": "Vendor may terminate this Agreement or any Statement of Work for convenience at any time"
+    },
+    {
+      "id": "msa-insurance",
+      "question": "what insurance does the vendor have to carry",
+      "document": "master-services-agreement.pdf",
+      "page": 9,
+      "quote": "professional liability insurance, general commercial liability insurance"
+    },
+    {
+      "id": "saas-fee-increase",
+      "question": "fee increase on renewal",
+      "document": "saas-subscription.pdf",
+      "page": 1,
+      "quote": "Vendor may increase the Fees by up to 9% upon each renewal"
+    },
+    {
+      "id": "saas-renewal-notice",
+      "question": "how much notice to stop the subscription from renewing",
+      "document": "saas-subscription.pdf",
+      "page": 1,
+      "quote": "at least 60 days written notice before the end of the then"
+    },
+    {
+      "id": "saas-liability-cap",
+      "question": "what is the most the software vendor can be made to pay in damages",
+      "document": "saas-subscription.pdf",
+      "page": 2,
+      "quote": "limited to the Fees paid or payable by Customer in the 12 months preceding the claim"
+    },
+    {
+      "id": "hardware-late-payment",
+      "question": "late payment charge",
+      "document": "hardware-supply.pdf",
+      "page": 2,
+      "quote": "late payment charge of 2% of the invoice amount for each week of late payment"
+    },
+    {
+      "id": "hardware-exclusivity",
+      "question": "are we allowed to buy the component from another supplier",
+      "document": "hardware-supply.pdf",
+      "page": 2,
+      "quote": "shall purchase its entire requirement of the Component exclusively from Supplier"
+    },
+    {
+      "id": "hardware-warranty",
+      "question": "how long are the products guaranteed against defects",
+      "document": "hardware-supply.pdf",
+      "page": 3,
+      "quote": "free from defects in materials and workmanship for two years from delivery"
+    },
+    {
+      "id": "sow-expenses",
+      "question": "are travel costs billed on top of the consulting fee",
+      "document": "consulting-sow.docx",
+      "page": null,
+      "quote": "The fee includes all travel and other expenses"
+    },
+    {
+      "id": "nda-governing-law",
+      "question": "which law governs the confidentiality agreement",
+      "document": "mutual-nda.docx",
+      "page": null,
+      "quote": "governed by the laws of the State of Delaware"
+    }
+  ]
+}

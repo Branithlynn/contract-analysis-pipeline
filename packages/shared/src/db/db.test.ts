@@ -186,10 +186,107 @@ describe("migration 2 on a version 1 database file", () => {
     expect(
       db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'retrieval_chunks'").get(),
     ).toBeUndefined();
-    expect(migrate(db)).toEqual([2]);
+    expect(migrate(db)).toEqual(MIGRATIONS.filter((m) => m.version > 1).map((m) => m.version));
     expect(all("documents", "id")).toEqual(
       before.map((row) => ({ ...row, index_status: null, index_error: null })),
     );
+  });
+});
+
+// Migration 3 renames retrieval_chunks.page and adds the full text index over chunks that may
+// already be there.
+describe("migration 3 on a version 2 database with chunks", () => {
+  let db: Db;
+
+  beforeEach(() => {
+    db = openMemoryDb();
+    migrate(
+      db,
+      MIGRATIONS.filter((m) => m.version <= 2),
+    );
+    insertDocument(db, "msa", { status: "completed", index_status: "indexed" });
+    insertDocument(db, "sow", { status: "completed", index_status: "indexed" });
+    const insert = db.prepare(
+      `INSERT INTO retrieval_chunks
+         (document_id, chunk_index, page, text, injection_flagged, embed_model, embed_dim, embedding, created_at)
+       VALUES (?, ?, ?, ?, ?, 'nomic-embed-text', 2, ?, ?)`,
+    );
+    const vector = Buffer.from(new Float32Array([1, 0]).buffer);
+    insert.run("msa", 0, 11, "Vendor may terminate for convenience.", 0, vector, NOW);
+    insert.run("msa", 1, 12, "All Work Product is owned by Vendor.", 0, vector, NOW);
+    insert.run("sow", 0, null, "The fee includes all travel expenses.", 1, vector, NOW);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  const match = (query: string) =>
+    db
+      .prepare(
+        `SELECT c.text FROM retrieval_chunks_fts f JOIN retrieval_chunks c ON c.id = f.rowid
+         WHERE retrieval_chunks_fts MATCH ? ORDER BY c.id`,
+      )
+      .all(query)
+      .map((row) => (row as { text: string }).text);
+
+  it("keeps every chunk and turns its page into a one page range", () => {
+    const before = db.prepare("SELECT * FROM retrieval_chunks ORDER BY id").all() as Record<
+      string,
+      unknown
+    >[];
+
+    expect(migrate(db)).toEqual(MIGRATIONS.filter((m) => m.version > 2).map((m) => m.version));
+
+    const after = db.prepare("SELECT * FROM retrieval_chunks ORDER BY id").all();
+    expect(after).toEqual(
+      before.map(({ page, ...rest }) => ({
+        ...rest,
+        page_start: page,
+        page_end: page,
+        page_breaks: null,
+      })),
+    );
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+  });
+
+  it("fills the full text index from the chunks that were already there", () => {
+    migrate(db);
+
+    expect(match('"convenience"')).toEqual(["Vendor may terminate for convenience."]);
+    // Stemmed: "owns" finds "owned".
+    expect(match('"owns"')).toEqual(["All Work Product is owned by Vendor."]);
+    // A flagged chunk is in the index like any other, the search leaves it out.
+    expect(match('"travel"')).toEqual(["The fee includes all travel expenses."]);
+  });
+
+  it("keeps the index in step with inserts, updates and deletes from then on", () => {
+    migrate(db);
+    const vector = Buffer.from(new Float32Array([1, 0]).buffer);
+    db.prepare(
+      `INSERT INTO retrieval_chunks
+         (document_id, chunk_index, page_start, page_end, text, embed_model, embed_dim, embedding, created_at)
+       VALUES ('msa', 2, 13, 13, 'Insurance must be kept in force.', 'm', 2, ?, ?)`,
+    ).run(vector, NOW);
+    expect(match('"insurance"')).toEqual(["Insurance must be kept in force."]);
+
+    db.prepare(
+      "UPDATE retrieval_chunks SET text = 'Notices go by email.' WHERE chunk_index = 2",
+    ).run();
+    expect(match('"insurance"')).toEqual([]);
+    expect(match('"email"')).toEqual(["Notices go by email."]);
+
+    db.prepare("DELETE FROM retrieval_chunks WHERE document_id = 'msa'").run();
+    expect(match('"email" OR "convenience" OR "vendor"')).toEqual([]);
+    expect(match('"travel"')).toHaveLength(1);
+    expect(
+      db
+        .prepare(
+          "INSERT INTO retrieval_chunks_fts (retrieval_chunks_fts) VALUES ('integrity-check')",
+        )
+        .run(),
+    ).toBeDefined();
   });
 });
 
