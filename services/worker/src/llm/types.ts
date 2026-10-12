@@ -50,6 +50,10 @@ export interface LlmProvider {
   // The context size this request would be sent with. Only ollama has one, and it reloads the model
   // when it changes, so the eval records it per call.
   numCtx?(req: LlmRequest): number;
+  // A cheap question that fails fast when the provider can't do the work: not reachable, or the
+  // model is not there. Throws an LlmError. Only ollama has one: it is the provider that can sit
+  // on a call for the whole timeout, and asking a hosted api would cost a request.
+  check?(): Promise<void>;
   // For providers that hold connections open. Called once on worker shutdown.
   close?(): Promise<void>;
 }

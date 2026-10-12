@@ -52,9 +52,10 @@ const text: Check<string, string | null> = (value) => ({ value: cleanText(value)
 // Both models answered with codes ("USA", "LUX", "DE" for Delaware, which reads as Germany), and
 // the 7b once put "2023-01-01" here with the governing law sentence as its quote. No jurisdiction
 // has a name of two or three letters, so a value that short is a code. So is a subdivision code:
-// two letters, a dash, one to three letters or digits ("US-NY", "GB-ENG"). A code can't be shown to
-// a reviewer as the governing law, and a wrong reading of it is worse than an empty field.
-const JURISDICTION_CODE = /^(?:[A-Za-z]{2,3}|[A-Za-z]{2}-[A-Za-z0-9]{1,3})$/;
+// two or three letters, a dash, one to three letters or digits ("US-NY", "GB-ENG", "USA-NY"). A
+// code can't be shown to a reviewer as the governing law, and a wrong reading of it is worse than
+// an empty field.
+const JURISDICTION_CODE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,3})?$/;
 
 const jurisdiction: Check<string, string | null> = (value) => {
   const cleaned = cleanText(value);

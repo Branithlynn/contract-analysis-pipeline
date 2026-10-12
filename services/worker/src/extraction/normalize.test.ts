@@ -176,6 +176,8 @@ describe("normalizeExtraction", () => {
       ["uk", "a code, not the name of a jurisdiction"],
       ["US-NY", "a code, not the name of a jurisdiction"],
       ["GB-ENG", "a code, not the name of a jurisdiction"],
+      ["USA-NY", "a code, not the name of a jurisdiction"],
+      ["GBR-ENG", "a code, not the name of a jurisdiction"],
       ["us-ca", "a code, not the name of a jurisdiction"],
       ["FR-75", "a code, not the name of a jurisdiction"],
       ["2023-01-01", "a date, not a jurisdiction"],

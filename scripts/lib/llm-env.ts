@@ -17,7 +17,7 @@ export function llmEnvFromArgs(args: LlmArgs): Record<string, string | undefined
   }
   if (args.prompt !== undefined && !ExtractPromptVersion.safeParse(args.prompt).success) {
     throw new Error(
-      `unknown prompt version "${args.prompt}", there is ${ExtractPromptVersion.options.join(" and ")}`,
+      `unknown prompt version "${args.prompt}", there is ${ExtractPromptVersion.options.join(", ")}`,
     );
   }
 

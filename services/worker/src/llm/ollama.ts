@@ -35,6 +35,8 @@ export function undiciVersions(): { agent: string; nodeFetch: string | undefined
 }
 
 const NUM_CTX_CAP = 32768;
+// Any fixed number does, it only has to be the same on every call.
+const SEED = 42;
 // The <document> wrapper with its filename, plus the chat template's role tokens.
 const MESSAGE_MARGIN_TOKENS = 512;
 // Legal text tokenizes worse than prose (numbers, section refs, defined terms in caps), so this
@@ -107,6 +109,12 @@ const ChatChunk = z.object({
 });
 
 const ErrorBody = z.object({ error: z.string() });
+
+// GET /api/tags: the models that are pulled.
+const TagsBody = z.object({ models: z.array(z.object({ name: z.string() })) });
+// Listing models is instant on a healthy ollama. Much shorter than LLM_TIMEOUT_MS on purpose: the
+// check exists so that a dead ollama is noticed before a call waits that long.
+const CHECK_TIMEOUT_MS = 10_000;
 
 const ABORT_NAMES = new Set(["AbortError", "TimeoutError"]);
 
@@ -232,8 +240,11 @@ export function buildChatBody(model: string, numCtxFloor: number, req: LlmReques
     keep_alive: "10m",
     messages: [{ role: "system", content: system }, ...req.messages],
     options: {
-      // Same document in, same extraction out.
+      // Same document in, same extraction out. Temperature 0 alone did not get there: two runs of
+      // the same prompt on the same document gave different answers. The fixed seed takes one
+      // source of variation away. How ollama splits the model between gpu and cpu can still differ.
       temperature: 0,
+      seed: SEED,
       num_ctx: requestNumCtx(numCtxFloor, system, req),
       num_predict: req.maxOutputTokens,
     },
@@ -276,6 +287,38 @@ export function createOllamaProvider(opts: OllamaOptions): LlmProvider {
     model,
     close: () => agent.close(),
     numCtx: (req) => buildChatBody(model, numCtxFloor, req).options.num_ctx,
+    async check(): Promise<void> {
+      let res: Response;
+      try {
+        res = await doFetch(`${baseUrl}/api/tags`, {
+          method: "GET",
+          signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+          dispatcher: agent,
+        });
+      } catch (err) {
+        throw fetchFailure(err, baseUrl, CHECK_TIMEOUT_MS, CHECK_TIMEOUT_MS);
+      }
+      const body = await res.text();
+      if (res.status !== 200) {
+        throw new LlmError(
+          "unavailable",
+          `Ollama returned ${res.status} for /api/tags: ${errorText(body)}`,
+        );
+      }
+      const json = parseJson(body);
+      const tags = json.ok ? TagsBody.safeParse(json.value) : null;
+      if (!tags?.success) {
+        throw new LlmError("unavailable", `${baseUrl}/api/tags did not answer like Ollama`, body);
+      }
+      // A model pulled without a tag is listed as name:latest.
+      const pulled = tags.data.models.some((m) => m.name === model || m.name === `${model}:latest`);
+      if (!pulled) {
+        throw new LlmError(
+          "invalid_request",
+          `Model ${model} not pulled. Run: ollama pull ${model}`,
+        );
+      }
+    },
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const started = performance.now();
       const sent = await send(req);

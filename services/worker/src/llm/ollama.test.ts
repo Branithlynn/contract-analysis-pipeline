@@ -92,6 +92,10 @@ function setup(fetchImpl: (input: string, init: FetchInit) => Promise<Response>)
   return { provider, fetchMock };
 }
 
+function tagsResponse(...names: string[]): Response {
+  return Response.json({ models: names.map((name) => ({ name, size: 4683087332 })) });
+}
+
 async function expectLlmError(promise: Promise<unknown>): Promise<LlmError> {
   const err: unknown = await promise.then(
     () => undefined,
@@ -124,6 +128,81 @@ describe("computeNumCtx", () => {
   });
 });
 
+describe("ollama check", () => {
+  it("asks /api/tags and passes when the model is listed", async () => {
+    const { provider, fetchMock } = setup(() =>
+      Promise.resolve(tagsResponse("llama3.2:3b", "qwen2.5:7b-instruct")),
+    );
+
+    await expect(provider.check?.()).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("http://ollama:11434/api/tags");
+    expect(init?.method).toBe("GET");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("takes a model pulled without a tag as name:latest", async () => {
+    const provider = createOllamaProvider({
+      baseUrl: "http://ollama:11434",
+      model: "qwen2.5",
+      numCtxFloor: FLOOR,
+      timeoutMs: 5000,
+      fetch: () => Promise.resolve(tagsResponse("qwen2.5:latest")),
+    });
+
+    await expect(provider.check?.()).resolves.toBeUndefined();
+  });
+
+  it("says how to pull the model when it is not listed", async () => {
+    const { provider } = setup(() => Promise.resolve(tagsResponse("llama3.2:3b")));
+
+    const err = await expectLlmError(provider.check?.() ?? Promise.resolve());
+
+    expect(err.kind).toBe("invalid_request");
+    expect(err.message).toBe(
+      "Model qwen2.5:7b-instruct not pulled. Run: ollama pull qwen2.5:7b-instruct",
+    );
+  });
+
+  it("reports an ollama that is not running as unavailable", async () => {
+    const { provider } = setup(() =>
+      Promise.reject(new TypeError("fetch failed", { cause: new Error("ECONNREFUSED") })),
+    );
+
+    const err = await expectLlmError(provider.check?.() ?? Promise.resolve());
+
+    expect(err.kind).toBe("unavailable");
+    expect(err.message).toBe("Cannot reach Ollama at http://ollama:11434");
+  });
+
+  it("reports an ollama that does not answer the check within 10 s as a timeout", async () => {
+    const { provider } = setup(() =>
+      Promise.reject(new DOMException("The operation timed out.", "TimeoutError")),
+    );
+
+    const err = await expectLlmError(provider.check?.() ?? Promise.resolve());
+
+    expect(err.kind).toBe("timeout");
+    expect(err.message).toBe("Ollama did not answer within 10000ms");
+  });
+
+  it("does not take another server on that port for ollama", async () => {
+    const { provider: wrongBody } = setup(() => Promise.resolve(Response.json({ hello: 1 })));
+    const { provider: wrongStatus } = setup(() =>
+      Promise.resolve(new Response("not found", { status: 404 })),
+    );
+
+    expect((await expectLlmError(wrongBody.check?.() ?? Promise.resolve())).message).toBe(
+      "http://ollama:11434/api/tags did not answer like Ollama",
+    );
+    expect((await expectLlmError(wrongStatus.check?.() ?? Promise.resolve())).message).toBe(
+      "Ollama returned 404 for /api/tags: not found",
+    );
+  });
+});
+
 describe("createOllamaProvider", () => {
   it("exposes name and model", () => {
     const { provider } = setup(() => Promise.resolve(chatResponse("{}")));
@@ -150,7 +229,7 @@ describe("createOllamaProvider", () => {
         { role: "system", content: "You extract contract facts." },
         { role: "user", content: "<document>Term: 12 months</document>" },
       ],
-      options: { temperature: 0, num_ctx: FLOOR, num_predict: 2048 },
+      options: { temperature: 0, seed: 42, num_ctx: FLOOR, num_predict: 2048 },
     });
   });
 

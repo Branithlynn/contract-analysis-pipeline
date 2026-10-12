@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { parseArgs } from "node:util";
 import { LlmExtractionSchema, MIME_FORMATS } from "@nexus/shared";
-import { createLogger, loadConfig } from "@nexus/shared/node";
+import { ExtractPromptVersion, createLogger, loadConfig } from "@nexus/shared/node";
 import { z } from "zod";
 import { LlmError } from "../services/worker/src/llm/errors.js";
 import { createProvider, ollamaContextFloor } from "../services/worker/src/llm/factory.js";
@@ -22,8 +22,7 @@ import { llmEnvFromArgs } from "./lib/llm-env.js";
 // How much of the document to show in the printed ollama request body.
 const PREVIEW_CHARS = 300;
 
-const USAGE =
-  "usage: npm run llm-smoke -- <file> [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt extract.v1|extract.v2]";
+const USAGE = `usage: npm run llm-smoke -- <file> [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt ${ExtractPromptVersion.options.join("|")}]`;
 
 function fail(message: string): never {
   console.error(message);

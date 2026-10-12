@@ -2,6 +2,7 @@ import { llmExtractionJsonSchema } from "@nexus/shared";
 import type { ExtractPromptVersion } from "@nexus/shared/node";
 import * as v1 from "./extract.v1.js";
 import * as v2 from "./extract.v2.js";
+import * as v3 from "./extract.v3.js";
 
 // What differs between versions of the extraction prompt: the system prompt and the descriptions
 // in the json schema. The user message, the repair and retry wording, the schema name and the
@@ -26,6 +27,11 @@ const PROMPTS: Record<ExtractPromptVersion, () => ExtractPrompt> = {
     version: v2.PROMPT_VERSION,
     system: v2.buildSystemPrompt(),
     schema: v2.extractionJsonSchema(),
+  }),
+  "extract.v3": () => ({
+    version: v3.PROMPT_VERSION,
+    system: v3.buildSystemPrompt(),
+    schema: v3.extractionJsonSchema(),
   }),
 };
 

@@ -6,7 +6,7 @@ export type LlmProviderName = z.infer<typeof LlmProviderName>;
 
 // The versions of the extraction prompt the worker has. Listed here so the config can validate the
 // choice; the prompts themselves live in the worker.
-export const ExtractPromptVersion = z.enum(["extract.v1", "extract.v2"]);
+export const ExtractPromptVersion = z.enum(["extract.v1", "extract.v2", "extract.v3"]);
 export type ExtractPromptVersion = z.infer<typeof ExtractPromptVersion>;
 
 const PositiveInt = z.coerce.number().int().positive();

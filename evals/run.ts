@@ -7,7 +7,7 @@ import { basename, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { MIME_FORMATS } from "@nexus/shared";
-import { createLogger, loadConfig } from "@nexus/shared/node";
+import { ExtractPromptVersion, createLogger, loadConfig } from "@nexus/shared/node";
 import { llmEnvFromArgs } from "../scripts/lib/llm-env.js";
 import { createProvider } from "../services/worker/src/llm/factory.js";
 import { analyzeDocument, type AnalyzeDeps } from "../services/worker/src/pipeline/analyze.js";
@@ -15,6 +15,7 @@ import { classifyError } from "../services/worker/src/pipeline/errors.js";
 import { CASE_SUFFIX, caseNames, expectedStatus, findCaseFiles, readCase } from "./cases.js";
 import { renderReport, type CaseRun, type ReportHeader } from "./report.js";
 import { scoreCase, type CaseOutcome, type ExpectedCase } from "./score.js";
+import { stopReason } from "./stop.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const RESULTS_DIR = join(ROOT, "evals", "results");
@@ -23,8 +24,7 @@ const DEFAULT_CASES = "evals/cases/*.expected.json";
 // today, and it is the day the expected dates were worked out for.
 const CLOCK = "2026-10-09";
 
-const USAGE =
-  "usage: npm run eval -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt extract.v1|extract.v2] [--cases <name or glob>] [--repeat <n>]";
+const USAGE = `usage: npm run eval -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt ${ExtractPromptVersion.options.join("|")}] [--cases <name or glob>] [--repeat <n>]`;
 
 function fail(message: string): never {
   console.error(`${message}\n${USAGE}`);
@@ -158,20 +158,36 @@ async function main(): Promise<void> {
     clock: () => new Date(`${CLOCK}T12:00:00Z`),
   };
 
+  const planned = cases.length * repeat;
   const runs: RawRun[] = [];
   const expectedStatuses: string[] = [];
+  let stopped: string | null = null;
   try {
-    for (const test of cases) {
+    // Before the first case, so a provider that is down costs seconds and not a timeout per case.
+    try {
+      await provider.check?.();
+    } catch (err) {
+      fail(`${provider.name} is not ready, nothing was run: ${message(err)}`);
+    }
+    run: for (const test of cases) {
       for (let attempt = 1; attempt <= repeat; attempt++) {
         const label = repeat === 1 ? test.name : `${test.name} #${String(attempt)}`;
         console.error(`running ${label}`);
         runs.push(await runCase(test, label, deps));
         expectedStatuses.push(expectedStatus(test.expected));
+        stopped = stopReason(runs);
+        if (stopped !== null) break run;
       }
     }
   } finally {
     await provider.close?.();
   }
+  // The cases that did run are still written out, they may be half an hour of answers. The note
+  // and the exit code keep the report from passing for a full run.
+  const stopNote =
+    stopped === null
+      ? null
+      : `STOPPED EARLY after ${String(runs.length)} of ${String(planned)} runs: ${stopped}. The totals below cover only the runs that were made.`;
 
   const now = new Date();
   const cpu = cpus();
@@ -184,7 +200,12 @@ async function main(): Promise<void> {
     cpu: `${cpu[0]?.model.trim() ?? "unknown"} (${String(cpu.length)} threads)`,
     repeat,
   };
-  const report = renderReport({ header, runs, expectedStatuses });
+  const report = renderReport({
+    header,
+    runs,
+    expectedStatuses,
+    ...(stopNote === null ? {} : { notes: [stopNote] }),
+  });
 
   // With the time, so a partial --cases run later the same day never replaces a full one.
   const name = [header.date, localTime(now), header.provider, header.model, header.prompt_version]
@@ -199,6 +220,10 @@ async function main(): Promise<void> {
 
   console.log(report);
   console.error(`wrote evals/results/${name}.md and .json`);
+  if (stopNote !== null) {
+    console.error(stopNote);
+    process.exitCode = 1;
+  }
 }
 
 await main();
