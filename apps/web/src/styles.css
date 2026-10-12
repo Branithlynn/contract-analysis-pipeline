@@ -196,13 +196,7 @@ code {
   font-weight: 600;
 }
 
-.nav-item-disabled,
-.nav-item-disabled:hover {
-  background: none;
-  color: var(--color-text-muted);
-}
-
-.nav-item-disabled .tag {
+.nav-item .tag {
   margin-left: auto;
 }
 
@@ -1222,6 +1216,423 @@ summary {
 }
 
 /* The only motion: a spinner on things that are in progress. */
+/* chat */
+
+.button-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.button-primary:hover,
+.button-primary:active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.button-primary:disabled {
+  border-color: var(--color-border);
+  background: var(--color-sunken);
+  color: var(--color-text-muted);
+}
+
+/* A button that reads as a link: it opens something on this page instead of going anywhere. */
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.chat {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* The conversation keeps a readable line length, the earlier chats sit next to it. */
+.chat-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 760px) minmax(0, 260px);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chat-scope {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-half) var(--space-1);
+  border: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--color-sunken);
+  font-size: var(--text-sm);
+}
+
+.chat-scope > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-scope svg {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4) 0 var(--space-2);
+}
+
+.chat-empty > p {
+  max-width: 60ch;
+}
+
+.chat-starters {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+
+/* A question is a sentence, so unlike other buttons it may wrap on a narrow screen. */
+.chat-starters .button {
+  min-height: 32px;
+  padding-block: var(--space-half);
+  text-align: left;
+  white-space: normal;
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.chat-user {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+}
+
+.chat-assistant {
+  padding: var(--space-2);
+  border: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* The model's own line breaks are kept. Nothing in an answer is rendered as markup. */
+.chat-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-note {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.cite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 20px;
+  height: 20px;
+  margin: 0 2px;
+  padding: 0 var(--space-half);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: text-bottom;
+  cursor: pointer;
+}
+
+.cite:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.cite:active {
+  background: var(--color-sunken);
+}
+
+/* Not by color alone: a warning icon, a dashed edge, and the words in the note under the answer. */
+.cite-unverified {
+  border-style: dashed;
+  border-color: var(--color-warn);
+  background: var(--color-warn-soft);
+  color: var(--color-warn);
+}
+
+.cite-unverified:hover {
+  border-color: var(--color-warn);
+  background: var(--color-surface);
+}
+
+.cite[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+.chat-sources {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  font-size: var(--text-sm);
+}
+
+.chat-source {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-source-number {
+  flex: none;
+  min-width: 20px;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-align: center;
+}
+
+.chat-source-unverified {
+  color: var(--color-warn);
+}
+
+.chat-trace > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.chat-trace[open] > summary {
+  margin-bottom: var(--space-1);
+}
+
+.chat-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  font-size: var(--text-sm);
+}
+
+.chat-step {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--space-1);
+  padding-left: var(--space-1);
+  border-left: 2px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+/* The step that is running now. */
+.chat-step-open {
+  border-left-color: var(--color-accent);
+}
+
+.chat-working {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.chat-working-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.chat-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+/* Stays in reach under a long conversation. */
+.chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  position: sticky;
+  bottom: var(--space-2);
+  padding: var(--space-1);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.chat-composer textarea {
+  width: 100%;
+  min-height: 48px;
+  padding: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+.chat-composer textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
+.chat-composer textarea:disabled {
+  background: var(--color-sunken);
+  cursor: not-allowed;
+}
+
+.chat-composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  padding-left: var(--space-1);
+}
+
+.chat-composer-row > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-threads {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.chat-threads h2 {
+  padding: 0 var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.chat-threads > p {
+  padding: 0 var(--space-1);
+}
+
+.chat-thread-link {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-half) var(--space-1);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.chat-thread-link:hover {
+  background: var(--color-sunken);
+}
+
+.chat-thread-link[aria-current="true"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.chat-thread-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-thread-when {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+/* The passage a chat answer cited, at the top of its document. */
+.passage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+}
+
+.passage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+}
+
+.passage-head h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-md);
+}
+
+.passage-text {
+  max-height: 320px;
+  margin: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+mark {
+  padding: 0 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-warn-soft);
+  box-shadow: 0 0 0 1px var(--color-warn);
+  color: inherit;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -1312,5 +1723,27 @@ summary {
   .field-row > summary {
     grid-template-columns: minmax(0, 1fr);
     gap: 0;
+  }
+}
+
+/* The earlier chats move under the conversation before the conversation gets cramped. */
+@media (max-width: 1280px) {
+  .chat-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+
+  .chat-thread {
+    max-width: 760px;
+  }
+}
+
+@media (max-width: 960px) {
+  .chat-user {
+    max-width: 100%;
+  }
+
+  .chat-composer {
+    bottom: var(--space-1);
   }
 }

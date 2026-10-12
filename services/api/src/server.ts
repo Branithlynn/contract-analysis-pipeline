@@ -34,6 +34,8 @@ export interface ServerDeps {
   threads?: BaseCheckpointSaver;
   // The chat models of the ask agent. Tests pass scripted ones.
   chatModels?: ChatModels;
+  // How often an open ask stream sends a comment line. Tests shorten it.
+  askHeartbeatMs?: number;
 }
 
 // Returns the app without listening so tests can drive it with inject().
@@ -47,6 +49,7 @@ export async function buildServer({
   clock,
   threads = createThreadStore(db),
   chatModels = createChatModels({ config }),
+  askHeartbeatMs,
 }: ServerDeps) {
   const app = fastify({
     loggerInstance: logger,
@@ -86,6 +89,7 @@ export async function buildServer({
     clock,
     threads,
     chatModels,
+    ...(askHeartbeatMs === undefined ? {} : { heartbeatMs: askHeartbeatMs }),
     ollamaGate: createOllamaGate({
       activeLocalJobs: () => queue.activeLocalJobs(),
       waitMs: config.ASK_BUSY_WAIT_MS,

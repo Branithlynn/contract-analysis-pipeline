@@ -56,7 +56,7 @@ export function createOllamaGate(opts: OllamaGateOptions): OllamaGate {
             "MODEL_BUSY",
             asking
               ? "The local model is answering another question. Try again in a moment."
-              : "The local model is busy analyzing a document. Try again in a moment, or pick a hosted model.",
+              : "The local model is busy with an extraction. Try again in a moment, or pick a hosted model.",
           );
         }
         await new Promise((resolve) => setTimeout(resolve, pollMs));

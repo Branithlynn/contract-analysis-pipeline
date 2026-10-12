@@ -183,6 +183,16 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 export const SearchResponseSchema = z.array(SearchHitSchema);
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
+export const ErrorBodySchema = z.object({
+  error: z.object({
+    // Plain string, not ErrorCode: http errors like NOT_FOUND or VALIDATION_ERROR are not document error codes.
+    code: z.string(),
+    message: z.string(),
+    details: z.unknown().optional(),
+  }),
+});
+export type ErrorBody = z.infer<typeof ErrorBodySchema>;
+
 // POST /api/ask. The model is the one picked in the ui, both parts or neither: without one the
 // LLM_PROVIDER / LLM_MODEL from the environment answer.
 export const AskRequestSchema = z
@@ -195,6 +205,8 @@ export const AskRequestSchema = z
       .optional(),
     provider: LlmProviderName.optional(),
     model: z.string().trim().min(1).max(200).optional(),
+    // The question is about this one contract: every search is limited to it.
+    document_id: z.uuid().optional(),
   })
   .refine((body) => (body.provider === undefined) === (body.model === undefined), {
     message: "provider and model have to be given together",
@@ -256,6 +268,72 @@ export const AskResponseSchema = z.object({
 });
 export type AskResponse = z.infer<typeof AskResponseSchema>;
 
+// The details of an ASK_TIMEOUT error: what the agent had done when the time ran out.
+export const AskTimeoutDetailsSchema = z.object({
+  thread_id: z.string(),
+  steps: z.array(AskStepSchema),
+});
+
+// POST /api/ask/stream sends these as server-sent events while the agent works, the event name
+// being the event field here. started comes first, then a step for every tool the model asks
+// for and one for its result, and at the end either done with the same body POST /api/ask
+// returns, or error with what an error response would have carried.
+export const AskProgressSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("tool_call"),
+    tool: z.string(),
+    input: z.record(z.string(), z.unknown()),
+  }),
+  // result: the same one line a step of the finished answer has.
+  z.object({ type: z.literal("tool_result"), tool: z.string(), result: z.string() }),
+]);
+export type AskProgress = z.infer<typeof AskProgressSchema>;
+
+export const AskStreamEventSchema = z.discriminatedUnion("event", [
+  z.object({
+    event: z.literal("started"),
+    data: z.object({ thread_id: z.string(), model: ModelSelectionSchema }),
+  }),
+  z.object({ event: z.literal("step"), data: AskProgressSchema }),
+  z.object({ event: z.literal("done"), data: AskResponseSchema }),
+  z.object({
+    event: z.literal("error"),
+    // status: the http status the same failure has on POST /api/ask.
+    data: ErrorBodySchema.extend({ status: z.int() }),
+  }),
+]);
+export type AskStreamEvent = z.infer<typeof AskStreamEventSchema>;
+
+// A chat thread in the list. The title is its first question.
+export const ThreadSummarySchema = z.object({
+  thread_id: z.string(),
+  title: z.string(),
+  // The contract the thread is about, when it was started from one.
+  document_id: z.string().nullable(),
+  updated_at: Timestamp,
+});
+export type ThreadSummary = z.infer<typeof ThreadSummarySchema>;
+
+export const ThreadMessageSchema = z.discriminatedUnion("role", [
+  z.object({ role: z.literal("user"), text: z.string() }),
+  z.object({
+    role: z.literal("assistant"),
+    text: z.string(),
+    // Checked again when the thread is read: a document that was indexed again since has new
+    // chunk ids, and a citation of an old one then reads not_found.
+    citations: z.array(AskCitationSchema),
+    steps: z.array(AskStepSchema),
+    // Null for an answer stored before the model was recorded.
+    model: ModelSelectionSchema.nullable(),
+  }),
+]);
+export type ThreadMessage = z.infer<typeof ThreadMessageSchema>;
+
+export const ThreadDetailSchema = ThreadSummarySchema.extend({
+  messages: z.array(ThreadMessageSchema),
+});
+export type ThreadDetail = z.infer<typeof ThreadDetailSchema>;
+
 // One provider in GET /api/models. Never carries a key or a part of one.
 export const ProviderAvailabilitySchema = z.object({
   provider: LlmProviderName,
@@ -273,13 +351,3 @@ export const ModelsResponseSchema = z.object({
   providers: z.array(ProviderAvailabilitySchema),
 });
 export type ModelsResponse = z.infer<typeof ModelsResponseSchema>;
-
-export const ErrorBodySchema = z.object({
-  error: z.object({
-    // Plain string, not ErrorCode: http errors like NOT_FOUND or VALIDATION_ERROR are not document error codes.
-    code: z.string(),
-    message: z.string(),
-    details: z.unknown().optional(),
-  }),
-});
-export type ErrorBody = z.infer<typeof ErrorBodySchema>;

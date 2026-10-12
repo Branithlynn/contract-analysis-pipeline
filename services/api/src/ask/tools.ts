@@ -29,6 +29,9 @@ export interface AskToolDeps {
   log: FastifyBaseLogger;
   // Today and the grounding threshold, for the derived dates and alerts.
   context: ReadContext;
+  // The chat was opened from this contract. Every search is limited to it, whatever the model
+  // passes: on a long register a short contract's clause would otherwise not show up.
+  documentId?: string | undefined;
 }
 
 // One short text, the same limit GET /api/search uses.
@@ -289,7 +292,8 @@ export function createAskTools(deps: AskToolDeps) {
   const searchClauses = tool(
     async ({ query, k, document_id }) => {
       const limit = Math.min(Math.max(k ?? DEFAULT_K, 1), MAX_K);
-      const documentId = document_id == null || document_id === "" ? undefined : document_id;
+      const asked = document_id == null || document_id === "" ? undefined : document_id;
+      const documentId = deps.documentId ?? asked;
       if (documentId !== undefined && getDocument(db, documentId) === undefined) {
         return reply({
           summary: "no such contract",

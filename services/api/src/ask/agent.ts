@@ -3,11 +3,19 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import type { FastifyBaseLogger } from "fastify";
 import { createAgent, createMiddleware } from "langchain";
-import type { AskCitation, AskStep } from "@nexus/shared";
+import { z } from "zod";
+import {
+  AskStepSchema,
+  ModelSelectionSchema,
+  type AskCitation,
+  type AskProgress,
+  type AskStep,
+  type ThreadMessage,
+} from "@nexus/shared";
 import { getRetrievalChunk, type Db, type Embedder, type ModelSelection } from "@nexus/shared/node";
 import type { ReadContext } from "../services/dto.js";
 import type { ChatModels } from "./chat-models.js";
-import { verifyCitations } from "./citations.js";
+import { verifyCitations, type CitationSources } from "./citations.js";
 import { buildAskSystemPrompt } from "./prompt.js";
 import { createAskTools, loadContract, summaryOf } from "./tools.js";
 
@@ -25,10 +33,14 @@ export interface AskInput {
   question: string;
   threadId: string;
   model: ModelSelection;
-  // The limit of the whole question. Aborted by the route's timeout.
+  // The question is about this one contract: searches are limited to it.
+  documentId?: string | undefined;
+  // The limit of the whole question. Aborted by the route's timeout, or when the client left.
   signal: AbortSignal;
   log: FastifyBaseLogger;
   context: ReadContext;
+  // Called for every tool the model asks for and for every result, while the agent works.
+  onProgress?: ((progress: AskProgress) => void) | undefined;
 }
 
 export interface AskResult {
@@ -101,43 +113,102 @@ function removals(messages: readonly BaseMessage[]): RemoveMessage[] {
   return out;
 }
 
+// What an answer carries in the thread besides its text, so the conversation can be shown again
+// after a reload: the trace, the model and the contract it was about. Kept in the message's
+// response_metadata, which langchain stores with the message and does not send to a provider.
+const METADATA_KEY = "nexus_ask";
+const AnswerMetadata = z.object({
+  steps: z.array(AskStepSchema),
+  model: ModelSelectionSchema.nullable(),
+  document_id: z.string().nullable(),
+});
+type AnswerMetadata = z.infer<typeof AnswerMetadata>;
+
+function metadataOf(message: BaseMessage): AnswerMetadata {
+  const parsed = AnswerMetadata.safeParse(message.response_metadata[METADATA_KEY]);
+  return parsed.success ? parsed.data : { steps: [], model: null, document_id: null };
+}
+
+function citationSources(deps: Pick<AskInput, "log" | "context"> & { db: Db }): CitationSources {
+  return {
+    chunk: (id) => getRetrievalChunk(deps.db, id),
+    contract: (id) => loadContract(deps, id),
+  };
+}
+
+// One event per message the graph produced: the model asking for tools, or a tool's result.
+function progressOf(message: unknown): AskProgress[] {
+  if (message instanceof AIMessage) {
+    return (message.tool_calls ?? []).map((call) => ({
+      type: "tool_call",
+      tool: call.name,
+      input: call.args,
+    }));
+  }
+  if (message instanceof ToolMessage) {
+    return [{ type: "tool_result", tool: message.name ?? "tool", result: summaryOf(message.text) }];
+  }
+  return [];
+}
+
+// The shape of one item of langgraph's "updates" stream that matters here: what each node that
+// ran added to the messages. Nodes that add none (the step limit) have no messages key.
+const GraphUpdate = z.record(
+  z.string(),
+  z.object({ messages: z.array(z.unknown()).optional() }).nullish(),
+);
+
 export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult> {
   const { db, log, context } = { ...deps, ...input };
   const agent = createAgent({
     model: deps.chatModels.create(input.model, input.signal),
-    tools: createAskTools({ db, embedder: deps.embedder, log, context }),
-    systemPrompt: buildAskSystemPrompt(context.today),
+    tools: createAskTools({
+      db,
+      embedder: deps.embedder,
+      log,
+      context,
+      documentId: input.documentId,
+    }),
+    systemPrompt: buildAskSystemPrompt(context.today, input.documentId),
     checkpointer: deps.threads,
     middleware: [stepLimit(deps.maxSteps)],
   });
-  const config = {
-    configurable: { thread_id: input.threadId },
-    signal: input.signal,
-    // langgraph's own limit counts graph steps, several per model call, and is not what
-    // ASK_MAX_STEPS means. It only has to stay out of the way of the step limit below.
-    recursionLimit: 10 * deps.maxSteps + 10,
-  };
+  const thread = { configurable: { thread_id: input.threadId } };
 
   async function threadMessages(): Promise<BaseMessage[]> {
-    const state = await agent.graph.getState({ configurable: config.configurable });
+    const state = await agent.graph.getState(thread);
     return state.values.messages ?? [];
   }
   const before = (await threadMessages()).length;
 
-  let turn: BaseMessage[];
   try {
-    const result = await agent.invoke({ messages: [new HumanMessage(input.question)] }, config);
-    turn = result.messages.slice(before);
+    // The same run for both endpoints: the stream is read here either way, and whoever wants
+    // to watch passes onProgress.
+    const stream = await agent.stream(
+      { messages: [new HumanMessage(input.question)] },
+      {
+        ...thread,
+        signal: input.signal,
+        streamMode: "updates",
+        // langgraph's own limit counts graph steps, several per model call, and is not what
+        // ASK_MAX_STEPS means. It only has to stay out of the way of the step limit above.
+        recursionLimit: 10 * deps.maxSteps + 10,
+      },
+    );
+    for await (const item of stream) {
+      const update = GraphUpdate.safeParse(item);
+      if (!update.success || input.onProgress === undefined) continue;
+      for (const node of Object.values(update.data)) {
+        for (const message of node?.messages ?? []) progressOf(message).forEach(input.onProgress);
+      }
+    }
   } catch (err) {
     // The thread now ends in the middle of a question: a tool call without its result, or a
     // question without an answer. The next question would send that to the model, and hosted
     // providers reject such a history. So a question that did not finish is taken out again and
     // the thread is as it was.
     const partial = (await threadMessages()).slice(before);
-    await agent.graph.updateState(
-      { configurable: config.configurable },
-      { messages: removals(partial) },
-    );
+    await agent.graph.updateState(thread, { messages: removals(partial) });
     const steps = stepsOf(partial);
     if (err instanceof StepLimitError)
       return { stopped: "step_limit", answer: null, citations: [], steps };
@@ -145,22 +216,86 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
     throw err;
   }
 
+  const turn = (await threadMessages()).slice(before);
+  const steps = stepsOf(turn);
+  const last = turn.at(-1);
+  const answer = last instanceof AIMessage ? last.text : "";
+
   // The thread keeps the question and the answer, not the tool calls in between. Their results
   // are the bulk of the text, and kept they would be sent again with every later question until
   // a local model's context overflows. A follow-up that needs the passages searches again.
-  const last = turn.at(-1);
+  // The answer is written back with the trace attached: a message with the id of one that is
+  // there replaces it.
   const between = turn.filter((message) => message !== last && !(message instanceof HumanMessage));
-  if (between.length > 0) {
-    await agent.graph.updateState(
-      { configurable: config.configurable },
-      { messages: removals(between) },
-    );
-  }
+  const metadata: AnswerMetadata = {
+    steps,
+    model: input.model,
+    document_id: input.documentId ?? null,
+  };
+  const kept =
+    last instanceof AIMessage && last.id !== undefined
+      ? [
+          new AIMessage({
+            id: last.id,
+            content: last.content,
+            additional_kwargs: last.additional_kwargs,
+            response_metadata: { ...last.response_metadata, [METADATA_KEY]: metadata },
+          }),
+        ]
+      : [];
+  await agent.graph.updateState(thread, { messages: [...removals(between), ...kept] });
 
-  const answer = last instanceof AIMessage ? last.text : "";
-  const citations = verifyCitations(answer, {
-    chunk: (id) => getRetrievalChunk(db, id),
-    contract: (id) => loadContract({ db, log, context }, id),
-  });
-  return { stopped: "done", answer, citations, steps: stepsOf(turn) };
+  return {
+    stopped: "done",
+    answer,
+    citations: verifyCitations(answer, citationSources({ db, log, context })),
+    steps,
+  };
+}
+
+export interface StoredThread {
+  messages: ThreadMessage[];
+  // The contract the newest answer was about.
+  document_id: string | null;
+  updated_at: string;
+}
+
+const Checkpoint = z.object({
+  ts: z.iso.datetime(),
+  channel_values: z.object({ messages: z.array(z.unknown()).optional() }),
+});
+
+// A thread as the chat shows it: questions and answers in order, each answer with its trace and
+// its citations checked against the index as it is now. Undefined when the thread has no
+// messages, which is also what a thread looks like whose only question never finished.
+export async function readThread(
+  deps: { db: Db; threads: BaseCheckpointSaver } & Pick<AskInput, "log" | "context">,
+  threadId: string,
+  // False for the list of threads, which shows no citations and would check them for nothing.
+  withCitations = true,
+): Promise<StoredThread | undefined> {
+  const tuple = await deps.threads.getTuple({ configurable: { thread_id: threadId } });
+  const checkpoint = Checkpoint.safeParse(tuple?.checkpoint);
+  if (!checkpoint.success) return undefined;
+
+  const sources = citationSources(deps);
+  const messages: ThreadMessage[] = [];
+  let documentId: string | null = null;
+  for (const message of checkpoint.data.channel_values.messages ?? []) {
+    if (message instanceof HumanMessage) {
+      messages.push({ role: "user", text: message.text });
+    } else if (message instanceof AIMessage && (message.tool_calls?.length ?? 0) === 0) {
+      const metadata = metadataOf(message);
+      documentId = metadata.document_id;
+      messages.push({
+        role: "assistant",
+        text: message.text,
+        citations: withCitations ? verifyCitations(message.text, sources) : [],
+        steps: metadata.steps,
+        model: metadata.model,
+      });
+    }
+  }
+  if (messages.length === 0) return undefined;
+  return { messages, document_id: documentId, updated_at: checkpoint.data.ts };
 }

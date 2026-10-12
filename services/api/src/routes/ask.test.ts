@@ -1,21 +1,7 @@
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it } from "vitest";
-import { AskResponseSchema, ErrorBodySchema, type AskResponse } from "@nexus/shared";
-import {
-  createLogger,
-  loadConfig,
-  MockEmbedder,
-  type Db,
-  type ModelSelection,
-} from "@nexus/shared/node";
-import {
-  currentTurn,
-  ScriptedChatModel,
-  toolCall,
-  type ChatScript,
-} from "../ask/scripted-model.js";
-import type { JobQueue } from "../queue.js";
-import { buildServer } from "../server.js";
+import { ErrorBodySchema } from "@nexus/shared";
+import { currentTurn, toolCall, type ChatScript } from "../ask/scripted-model.js";
 import type { ModelCatalog } from "../services/models.js";
 import {
   chunkIdOf,
@@ -25,72 +11,12 @@ import {
   ORDER,
   ORDER_DELIVERY,
   ORDER_LIABILITY,
-  seedContracts,
   TERMINATION,
 } from "../test-support/ask.js";
-import { NOW, offlineModels, okQueue } from "../test-support/fixtures.js";
+import { closeAskServers, setupAskServer as setup, texts } from "../test-support/ask-server.js";
+import { okQueue } from "../test-support/fixtures.js";
 
-const MOCK_ENV = { ALLOW_MOCK: "true", LLM_PROVIDER: "mock", LLM_MODEL: "mock" };
-
-interface SetupOptions {
-  env?: Record<string, string>;
-  queue?: JobQueue;
-  models?: ModelCatalog;
-  // Without a script the real factory is used, with its own mock model.
-  script?: ChatScript;
-}
-
-const open: Db[] = [];
-
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
-});
-
-async function setup(opts: SetupOptions = {}) {
-  const env = { ...MOCK_ENV, ...opts.env };
-  const db = seedContracts();
-  open.push(db);
-  const lines: Record<string, unknown>[] = [];
-  const stream = {
-    write: (line: string) => lines.push(JSON.parse(line) as Record<string, unknown>),
-  };
-  // One scripted model for every question, so a test can read everything that was sent to it.
-  const model = opts.script === undefined ? undefined : new ScriptedChatModel(opts.script);
-  const created: ModelSelection[] = [];
-  const app = await buildServer({
-    db,
-    queue: opts.queue ?? okQueue,
-    config: loadConfig(env),
-    logger: createLogger("api", "info", stream),
-    embedder: new MockEmbedder(),
-    models: opts.models ?? offlineModels(env),
-    clock: () => NOW,
-    ...(model === undefined
-      ? {}
-      : {
-          chatModels: {
-            create: (selection: ModelSelection) => {
-              created.push(selection);
-              return model;
-            },
-            close: () => Promise.resolve(),
-          },
-        }),
-  });
-  const ask = (body: Record<string, unknown>) =>
-    app.inject({ method: "POST", url: "/api/ask", payload: body });
-  const answer = async (body: Record<string, unknown>): Promise<AskResponse> => {
-    const res = await ask(body);
-    expect(res.statusCode, res.body).toBe(200);
-    return AskResponseSchema.parse(res.json());
-  };
-  // Every text the model was ever given, system prompt and tool results included.
-  const everythingSeen = () => (model?.seen ?? []).flat().map((m) => m.text);
-  return { db, ask, answer, model, created, lines, everythingSeen };
-}
-
-const texts = (messages: readonly BaseMessage[] | undefined) =>
-  (messages ?? []).map((m) => [m.getType(), m.text]);
+afterEach(closeAskServers);
 
 describe("POST /api/ask: which tool for which question", () => {
   it("answers a question about the register through find_contracts", async () => {
@@ -546,7 +472,7 @@ describe("POST /api/ask: ollama shares the gpu with the worker", () => {
     expect(res.statusCode).toBe(503);
     expect(ErrorBodySchema.parse(res.json()).error).toMatchObject({
       code: "MODEL_BUSY",
-      message: expect.stringMatching(/busy analyzing a document/) as string,
+      message: expect.stringMatching(/busy with an extraction/) as string,
     });
     expect(Date.now() - started).toBeLessThan(2000);
     // The model was never called, so nothing was added to ollama's queue.

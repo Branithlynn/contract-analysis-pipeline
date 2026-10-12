@@ -25,7 +25,7 @@ describe("createOllamaGate", () => {
 
     expect(err).toBeInstanceOf(HttpError);
     expect(err).toMatchObject({ status: 503, code: "MODEL_BUSY" });
-    expect((err as HttpError).message).toMatch(/analyzing a document/);
+    expect((err as HttpError).message).toMatch(/busy with an extraction/);
     // It asked more than once, and gave up near the limit instead of hanging.
     expect(active.mock.calls.length).toBeGreaterThan(1);
     expect(Date.now() - started).toBeLessThan(1000);

@@ -1,4 +1,12 @@
-import { CircleCheck, CircleX, Info, RotateCw, TriangleAlert, X } from "lucide-react";
+import {
+  CircleCheck,
+  CircleX,
+  Info,
+  MessageSquare,
+  RotateCw,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type {
   DocumentDetail as DocumentDetailDto,
@@ -38,6 +46,7 @@ import { focusableIn, trapTarget } from "../lib/focusTrap.js";
 import { resultModelLabel, shortModelName } from "../lib/modelPicker.js";
 import { countDifferences, diffRuns } from "../lib/runDiff.js";
 import { isPlainClick, selectionHref } from "../lib/selection.js";
+import { CitedPassage, type Passage } from "./CitedPassage.js";
 import { FieldRow, Quote, QuoteCheck } from "./FieldRow.js";
 import { StatusChip } from "./StatusBadge.js";
 import { useToast } from "./Toasts.js";
@@ -48,6 +57,11 @@ interface Props {
   modal: boolean;
   onClose: () => void;
   onSelect: (id: string) => void;
+  // The passage a chat answer cited from this document, shown above everything else.
+  passage: Passage | null;
+  onDismissPassage: () => void;
+  // Opens a chat about this document.
+  onAsk: (id: string) => void;
 }
 
 type Conflict = ExtractionResult["conflicts"][number];
@@ -487,7 +501,11 @@ function Timeline({ doc }: { doc: DocumentDetailDto }) {
   );
 }
 
-function Body({ doc, onSelect }: { doc: DocumentDetailDto; onSelect: (id: string) => void }) {
+interface BodyProps extends Pick<Props, "onSelect" | "passage" | "onDismissPassage" | "onAsk"> {
+  doc: DocumentDetailDto;
+}
+
+function Body({ doc, onSelect, passage, onDismissPassage, onAsk }: BodyProps) {
   const retry = useRetry();
   const toast = useToast();
   const failed = doc.status === "failed";
@@ -497,6 +515,7 @@ function Body({ doc, onSelect }: { doc: DocumentDetailDto; onSelect: (id: string
 
   return (
     <div className="detail-body">
+      {passage !== null && <CitedPassage passage={passage} onDismiss={onDismissPassage} />}
       <div className="detail-status">
         <StatusChip doc={doc} />
         {doc.result_model !== null && doc.result_provider !== null && (
@@ -512,6 +531,26 @@ function Body({ doc, onSelect }: { doc: DocumentDetailDto; onSelect: (id: string
         )}
       </div>
       {hint !== null && <p className="detail-hint">{hint}</p>}
+      {/* Only what the chat can answer about: a document with values, which is also the one
+          the search index was built for. */}
+      {doc.status === "completed" && doc.extraction && (
+        <div className="run-actions">
+          {/* A duplicate has no index of its own, its text is found through the original. */}
+          <button
+            type="button"
+            className="button"
+            onClick={() => onAsk(doc.duplicate_of ?? doc.id)}
+          >
+            <MessageSquare size={14} aria-hidden="true" />
+            Ask about this contract
+          </button>
+          {doc.duplicate_of === null && doc.index_status !== "indexed" && (
+            <span className="tone-muted small">
+              Its text is not searchable, so answers come from the extracted values only.
+            </span>
+          )}
+        </div>
+      )}
       {doc.duplicate_of !== null && (
         <ReusedFrom originalId={doc.duplicate_of} onSelect={onSelect} />
       )}
@@ -598,7 +637,15 @@ function DrawerSkeleton() {
   );
 }
 
-export function DocumentDetail({ id, modal, onClose, onSelect }: Props) {
+export function DocumentDetail({
+  id,
+  modal,
+  onClose,
+  onSelect,
+  passage,
+  onDismissPassage,
+  onAsk,
+}: Props) {
   const document = useDocument(id);
   const closeRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
@@ -664,7 +711,13 @@ export function DocumentDetail({ id, modal, onClose, onSelect }: Props) {
           {document.error && (
             <p className="notice notice-error">Could not refresh: {document.error.message}</p>
           )}
-          <Body doc={doc} onSelect={onSelect} />
+          <Body
+            doc={doc}
+            onSelect={onSelect}
+            passage={passage}
+            onDismissPassage={onDismissPassage}
+            onAsk={onAsk}
+          />
         </>
       ) : document.error ? (
         <p className="notice notice-error">

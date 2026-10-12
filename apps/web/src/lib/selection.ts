@@ -2,7 +2,7 @@ import { useCallback, useSyncExternalStore, type MouseEvent } from "react";
 
 const PARAM = "doc";
 // pushState fires no event of its own, so the setter announces the change with this one.
-const CHANGE_EVENT = "nexus:selectionchange";
+export const CHANGE_EVENT = "nexus:selectionchange";
 
 export function readSelectedId(search: string): string | null {
   return new URLSearchParams(search).get(PARAM) || null;

@@ -2,7 +2,18 @@
 // answer. Versioned like the extraction prompts, so a change shows up in the logs.
 export const ASK_PROMPT_VERSION = "ask.v1";
 
-export function buildAskSystemPrompt(today: string): string {
+// documentId: the contract the chat was opened from. Only the id goes into the prompt. The file
+// name is something an uploader chose, so the model reads it from a tool result like any other
+// document data.
+export function buildAskSystemPrompt(today: string, documentId?: string): string {
+  const scope =
+    documentId === undefined
+      ? ""
+      : `\n\nThis conversation is about one contract, id ${documentId}. Questions are about it unless the user names another one. Use this id with get_contract. search_clauses only searches this contract.`;
+  return `${rules(today)}${scope}`;
+}
+
+function rules(today: string): string {
   return `You answer questions from the procurement team of Nexus Corp about its vendor contracts. Today is ${today}.
 
 Rules:

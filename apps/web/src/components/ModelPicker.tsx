@@ -96,7 +96,7 @@ export function ModelPicker() {
               group={group}
               onPick={(option) => {
                 choose({ provider: option.provider, model: option.model });
-                toast(`New uploads use ${option.label}`);
+                toast(`Uploads and chat now use ${option.label}`);
               }}
             />
           ))}

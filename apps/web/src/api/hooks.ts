@@ -1,10 +1,12 @@
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { TERMINAL_STATUSES, type DocumentStatus, type ModelSelection } from "@nexus/shared";
 import {
+  getChunk,
   getDocument,
   getDocumentRun,
   getDocuments,
   getModels,
+  getThreads,
   reanalyzeDocument,
   retryDocument,
   uploadDocuments,
@@ -103,4 +105,26 @@ export function useReanalyze() {
 export function useInvalidateDocuments() {
   const queryClient = useQueryClient();
   return () => queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY });
+}
+
+export const THREADS_KEY = ["threads"] as const;
+
+// The earlier chats. Refreshed by the chat itself after every answer.
+export function useThreads() {
+  return useQuery({
+    queryKey: THREADS_KEY,
+    queryFn: ({ signal }) => getThreads(signal),
+    staleTime: 30_000,
+  });
+}
+
+// The passage behind a citation. A chunk does not change, a document that is indexed again
+// gets new ones, so a miss is not asked for twice either.
+export function useChunk(id: number | null) {
+  return useQuery({
+    queryKey: ["chunks", id],
+    queryFn: id === null ? skipToken : ({ signal }) => getChunk(id, signal),
+    staleTime: Infinity,
+    retry: false,
+  });
 }

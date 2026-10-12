@@ -3,13 +3,22 @@ import {
   DocumentSummarySchema,
   ErrorBodySchema,
   ModelsResponseSchema,
+  SearchHitSchema,
+  ThreadDetailSchema,
+  ThreadSummarySchema,
   UploadResponseSchema,
+  type AskRequest,
+  type AskStreamEvent,
   type DocumentDetail,
   type DocumentSummary,
   type ModelSelection,
   type ModelsResponse,
+  type SearchHit,
+  type ThreadDetail,
+  type ThreadSummary,
   type UploadResponse,
 } from "@nexus/shared";
+import { readAskEvents } from "../lib/sse.js";
 
 // Relative on purpose: vite proxies /api in dev and nginx does in docker, so there is no api origin to configure.
 const DOCUMENTS = "/api/documents";
@@ -20,6 +29,8 @@ export class ApiError extends Error {
     readonly code: string,
     message: string,
     options?: ErrorOptions,
+    // What the api added to the error, e.g. the steps of a question that timed out.
+    readonly details?: unknown,
   ) {
     super(message, options);
     this.name = "ApiError";
@@ -57,7 +68,8 @@ async function readJson(res: Response): Promise<unknown> {
 function toApiError(res: Response, body: unknown): ApiError {
   const parsed = ErrorBodySchema.safeParse(body);
   if (parsed.success) {
-    return new ApiError(res.status, parsed.data.error.code, parsed.data.error.message);
+    const { code, message, details } = parsed.data.error;
+    return new ApiError(res.status, code, message, undefined, details);
   }
   // A proxy answering for a dead api sends html, not ErrorBody.
   return new ApiError(
@@ -205,4 +217,55 @@ export function uploadFile(
     form.append("files", file, file.name);
     xhr.send(form);
   });
+}
+
+const ThreadListSchema = ThreadSummarySchema.array();
+
+// Asks a question and reports the agent's steps while it works. Resolves once the stream has
+// ended with its done or error event, both of which went to onEvent like the steps before them.
+// Rejects with an ApiError when the api refused the question before any work started (a model
+// that is not available, MODEL_BUSY, THREAD_BUSY) or the connection broke off.
+export async function askStream(
+  body: AskRequest,
+  onEvent: (event: AskStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await send("/api/ask/stream", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify(body),
+    ...withSignal(signal),
+  });
+  if (!res.ok) throw toApiError(res, await readJson(res));
+  if (res.body === null) throw invalidResponse(res, undefined);
+
+  let ended = false;
+  try {
+    await readAskEvents(res.body, (event) => {
+      if (event.event === "done" || event.event === "error") ended = true;
+      onEvent(event);
+    });
+  } catch (err) {
+    // The connection dropping in the middle of the body is a TypeError too.
+    if (err instanceof TypeError) {
+      throw new ApiError(0, "NETWORK_ERROR", "Could not reach the server", { cause: err });
+    }
+    throw err;
+  }
+  if (!ended) {
+    throw new ApiError(0, "STREAM_ENDED", "The connection closed before the answer arrived");
+  }
+}
+
+export function getThreads(signal?: AbortSignal): Promise<ThreadSummary[]> {
+  return request(ThreadListSchema, "/api/threads", withSignal(signal));
+}
+
+export function getThread(id: string, signal?: AbortSignal): Promise<ThreadDetail> {
+  return request(ThreadDetailSchema, `/api/threads/${encodeURIComponent(id)}`, withSignal(signal));
+}
+
+// The passage a [chunk:<id>] citation points at.
+export function getChunk(id: number, signal?: AbortSignal): Promise<SearchHit> {
+  return request(SearchHitSchema, `/api/chunks/${String(id)}`, withSignal(signal));
 }

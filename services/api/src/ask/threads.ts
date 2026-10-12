@@ -17,6 +17,26 @@ class ThreadStore extends SqliteSaver {
 }
 
 const NameRow = z.object({ name: z.string() });
+const ThreadRow = z.object({ thread_id: z.string() });
+
+// The threads that have a checkpoint, the one written to last first. The one place that reads the
+// package's table directly: its api can list the checkpoints of a thread, but not the threads.
+// Only the two key columns are used. Checkpoint ids are uuid v6, which sort by time.
+export function listThreadIds(db: Db, limit: number): string[] {
+  const rows = db
+    .prepare<[number]>(
+      `SELECT thread_id FROM checkpoints
+       WHERE checkpoint_ns = ''
+       GROUP BY thread_id
+       ORDER BY MAX(checkpoint_id) DESC
+       LIMIT ?`,
+    )
+    .all(limit);
+  return z
+    .array(ThreadRow)
+    .parse(rows)
+    .map((row) => row.thread_id);
+}
 
 // Called once at api startup, right after the migrations, so the tables exist before the first
 // question and a broken setup fails at boot. The worker never touches them.
