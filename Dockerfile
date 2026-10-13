@@ -41,6 +41,10 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/packages/shared ./packages/shared
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 USER node
+# Opens a database the way both services do at startup, which loads sqlite-vec. Its binary is an
+# optional dependency that npm picks by os and cpu, so one that is missing for a platform we build
+# fails the build here, for that platform, and not the api when it boots.
+RUN node --input-type=module -e "import { openMemoryDb } from '@nexus/shared/node'; const db = openMemoryDb(); console.log('sqlite-vec', db.prepare('SELECT vec_version() AS v').pluck().get(), process.arch); db.close();"
 
 FROM node-runtime AS api
 COPY --from=prod-deps /app/services/api ./services/api

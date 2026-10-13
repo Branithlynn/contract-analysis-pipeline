@@ -122,8 +122,10 @@ function localDate(now: Date): string {
   return `${String(now.getFullYear())}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+// With seconds: a --cases run started in the same minute as a full run used to write over it.
 function localTime(now: Date): string {
-  return `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
 async function main(): Promise<void> {

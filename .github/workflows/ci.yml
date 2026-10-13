@@ -56,3 +56,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker compose build
+      # Search needs the sqlite-vec binary in the images, not only on the runner. The Dockerfile
+      # checks it while building. This asks the two finished images once more, as the user they
+      # run as, and compares vectors so a library that loads but does not work fails too.
+      - name: sqlite-vec loads in the api and worker images
+        run: |
+          for service in api worker; do
+            docker compose run --rm --no-deps -T --entrypoint node "$service" --input-type=module -e "
+              import { openMemoryDb } from '@nexus/shared/node';
+              const db = openMemoryDb();
+              const distance = db
+                .prepare('SELECT vec_distance_cosine(vec_f32(?), vec_f32(?)) AS d')
+                .pluck()
+                .get('[1, 0]', '[0, 1]');
+              if (distance !== 1) throw new Error('vec_distance_cosine gave ' + distance);
+              console.log('$service: sqlite-vec', db.prepare('SELECT vec_version()').pluck().get());
+            "
+          done
