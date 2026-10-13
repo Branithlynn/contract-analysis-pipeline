@@ -210,7 +210,7 @@ describe("POST /api/ask: limits", () => {
   it("forgets a question that hit the step limit, so the thread still works", async () => {
     let loop = true;
     const { answer, model } = await setup({
-      env: { ASK_MAX_STEPS: "2" },
+      env: { ASK_MAX_STEPS: "3" },
       script: (messages) => (loop ? always(messages, undefined) : new AIMessage("Fine now.")),
     });
     const first = await answer({ question: "Loop forever" });
@@ -632,14 +632,22 @@ describe("POST /api/ask: no lookup, no answer", () => {
     expect(body.steps.map((s) => s.tool)).toEqual(["lookup_reminder", "search_clauses"]);
   });
 
-  it("takes the reply to the reminder when no call is left to ask again", async () => {
-    const { answer, model } = await setup({ env: { ASK_MAX_STEPS: "2" }, script: never });
+  it("takes a reply without a lookup when no call is left to ask again", async () => {
+    // The smallest limit there is. One call goes to a tool call that does not run, one to the
+    // reply that is sent back, and the third has nobody left to send it to.
+    const { answer, model } = await setup({
+      env: { ASK_MAX_STEPS: "3" },
+      script: (messages) =>
+        currentTurn(messages).toolResults.length === 0
+          ? toolCall("find_contracts", { auto_renewal: "maybe" })
+          : new AIMessage("Sixty days."),
+    });
 
     const body = await answer({ question: "60 days written notice to terminate" });
 
     expect(body).toMatchObject({ stopped: "done", answer: "Sixty days." });
-    expect(model?.seen).toHaveLength(2);
-    expect(body.steps.map((s) => s.tool)).toEqual(["lookup_reminder"]);
+    expect(model?.seen).toHaveLength(3);
+    expect(body.steps.map((s) => s.tool)).toEqual(["find_contracts", "lookup_reminder"]);
   });
 
   it("shows the search it made as steps of the stream", async () => {
@@ -666,33 +674,35 @@ describe("POST /api/ask: no lookup, no answer", () => {
   });
 
   it("counts the reply that was sent back as a step", async () => {
-    // Two steps: the first reply, and the lookup it is sent back for. None is left for an answer.
-    const { answer, model } = await setup({ env: { ASK_MAX_STEPS: "2" }, script: lazy });
+    // Answers from thin air, then needs two lookups once it is told to.
+    const twice: ChatScript = (messages) => {
+      if (!reminded(messages)) return new AIMessage("Two contracts renew.");
+      return currentTurn(messages).toolResults.length < 2
+        ? toolCall("find_contracts", { auto_renewal: true })
+        : new AIMessage(`Only msa.pdf renews [contract:${MSA}].`);
+    };
+    // Three steps: the first reply and two lookups. None is left for an answer.
+    const { answer, model } = await setup({ env: { ASK_MAX_STEPS: "3" }, script: twice });
 
     const body = await answer({ question: "Which contracts renew?" });
 
     expect(body).toMatchObject({ stopped: "step_limit", answer: null });
-    expect(model?.seen).toHaveLength(2);
+    expect(model?.seen).toHaveLength(3);
     expect(body.steps.map((s) => [s.tool, s.result])).toEqual([
       ["lookup_reminder", "the first reply used no tool, so it was sent back once"],
+      ["find_contracts", "1 of 2 contracts match"],
       ["find_contracts", "not run"],
     ]);
 
-    // With a third step there is room for the answer.
-    const roomy = await setup({ env: { ASK_MAX_STEPS: "3" }, script: lazy });
+    // With a fourth step there is room for the answer.
+    const roomy = await setup({ env: { ASK_MAX_STEPS: "4" }, script: twice });
     expect((await roomy.answer({ question: "Which contracts renew?" })).stopped).toBe("done");
   });
 
-  it("does not send anything back when one step is all there is", async () => {
-    const { answer, model } = await setup({
-      env: { ASK_MAX_STEPS: "1" },
-      script: () => new AIMessage("Two contracts renew."),
-    });
-
-    const body = await answer({ question: "Which contracts renew?" });
-
-    expect(body).toMatchObject({ stopped: "done", answer: "Two contracts renew.", steps: [] });
-    expect(model?.seen).toHaveLength(1);
+  it("refuses to start with fewer than the three calls the rule needs", async () => {
+    await expect(setup({ env: { ASK_MAX_STEPS: "2" }, script: lazy })).rejects.toThrow(
+      /ASK_MAX_STEPS has to be at least 3/,
+    );
   });
 
   it("keeps neither the reminder nor the reply it answered in the thread", async () => {
@@ -790,6 +800,25 @@ describe("POST /api/ask: a tool call with wrong arguments", () => {
     ]);
   });
 
+  it("says which arguments a tool ignored, and where text search is", async () => {
+    // How the 3b went looking for the statement of work.
+    const { answer, model } = await setup({
+      script: (messages) =>
+        currentTurn(messages).toolResults.length === 0
+          ? toolCall("find_contracts", { query: "consulting statement of work", vendor: "x" })
+          : new AIMessage("Done."),
+    });
+
+    const body = await answer({ question: "When does the consulting statement of work end?" });
+
+    const result = currentTurn(model?.seen[1] ?? []).toolResults[0] ?? "";
+    // The contracts as before, and after the block what the tool has to say.
+    expect(result.split("\n</document>\n")[1]).toBe(
+      "find_contracts ignored these arguments, it does not take them: query, vendor. The result is what the other arguments gave. It does not search text. To search what the contracts say, call search_clauses with a query.",
+    );
+    expect(body.steps).toMatchObject([{ result: "2 of 2 contracts match" }]);
+  });
+
   it("takes a number that was sent as text", async () => {
     // The 3b's call for "worth more than", with the amounts as strings.
     const { answer } = await setup({
@@ -843,7 +872,7 @@ describe("POST /api/ask: what a question cost", () => {
 
   it("counts the calls of a question that ran into the step limit", async () => {
     const { answer, lines } = await setup({
-      env: { ASK_MAX_STEPS: "2" },
+      env: { ASK_MAX_STEPS: "3" },
       script: () => toolCall("find_contracts", {}),
     });
 
@@ -851,7 +880,7 @@ describe("POST /api/ask: what a question cost", () => {
 
     expect(body.stopped).toBe("step_limit");
     expect(lines).toContainEqual(
-      expect.objectContaining({ msg: "question answered", stopped: "step_limit", modelCalls: 2 }),
+      expect.objectContaining({ msg: "question answered", stopped: "step_limit", modelCalls: 3 }),
     );
   });
 

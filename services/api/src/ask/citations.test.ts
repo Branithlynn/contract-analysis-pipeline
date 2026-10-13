@@ -146,6 +146,28 @@ describe("verifyCitations", () => {
     ]);
   });
 
+  it("does not take the file name of the cited source for a quote from it", () => {
+    const id = docId(1);
+
+    // What the 7b wrote in the ask eval, for a contract and for a passage.
+    const contract = check(`- "Acme Cloud Ltd" with the file name "msa.pdf" [contract:${id}].`);
+    expect(contract).toMatchObject([{ status: "verified", file_name: "msa.pdf" }]);
+    // The name is not listed as a quote either: the ui would mark it as one.
+    expect(contract[0]?.quotes.map((q) => q.text)).toEqual(["Acme Cloud Ltd"]);
+
+    expect(
+      check('The "MSA.pdf" contract says it is "limited to the fees paid" [chunk:7].'),
+    ).toMatchObject([{ status: "verified", quotes: [{ text: "limited to the fees paid" }] }]);
+    // The name of another file is a quote like any other, and it is not in this source.
+    expect(check(`See "sow.docx" [contract:${id}].`)).toMatchObject([
+      { status: "quote_not_found" },
+    ]);
+    // A real quote that is wrong still fails next to a file name.
+    expect(check('"msa.pdf" says "Net 90" [chunk:7].')).toMatchObject([
+      { status: "quote_not_found" },
+    ]);
+  });
+
   it("gives a quote to the citation that follows it, not to a later one", () => {
     const citations = check(
       `It is "limited to the fees paid" [chunk:7]. Payment is "Net 30" [chunk:8].`,

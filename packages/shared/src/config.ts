@@ -90,7 +90,13 @@ const ConfigSchema = z
     ASK_TIMEOUT_MS: PositiveInt.default(180000),
     // How many times the model may be called for one question. Each call either asks for tools
     // or gives the answer, so 6 is at most 5 rounds of tools.
-    ASK_MAX_STEPS: PositiveInt.default(6),
+    // Not below 3. A model that answers without a lookup is sent back once, then the agent
+    // searches for it, and only the third call answers from what was found. With fewer calls an
+    // answer with nothing behind it would have to be taken as it is.
+    ASK_MAX_STEPS: PositiveInt.min(
+      3,
+      "ASK_MAX_STEPS has to be at least 3: a reply without a lookup is sent back once, then the agent makes the search itself, and the third call is the one that answers from it",
+    ).default(6),
     // Ollama only: how long a question waits for the gpu while the worker is extracting, before
     // it is answered with MODEL_BUSY.
     ASK_BUSY_WAIT_MS: PositiveInt.default(5000),

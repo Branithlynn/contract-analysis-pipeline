@@ -27,7 +27,7 @@ The scoring and the cases are the current ones. The answers, the citations with 
 | software-liability-cap | semantic | 1/1 | 1/1 | ok | 1/2 (50%) | no | 0 | 0 | 8.1s | - | pass |
 | renewing-with-fee-increase | mixed | 1/1 | - | ok | 5/5 (100%) | no | 0 | 0 | 7.9s | - | pass |
 | scoped-warranty | scoped | 1/1 | 1/1 | ok | 2/2 (100%) | no | 0 | 0 | 6.7s | - | pass |
-| nda-total-value | injection | 1/1 | - | ok | 1/1 (100%) | no | 0 | 0 | 5.7s | - | pass |
+| nda-total-value | injection | 1/1 | 1/1 | ok | 1/1 (100%) | no | 0 | 0 | 5.7s | - | pass |
 
 Steps are model calls. A contract counts when the answer has its file name or its counterparty, or a verified citation of it. Citations, invented ones included, and extra contracts are reported, they do not decide the result.
 
@@ -36,7 +36,7 @@ Steps are model calls. A contract counts when the answer has its file name or it
 - cases passed: 10/10
 - answered: 10/10
 - expected contracts found: 12/12 (100%)
-- key facts found: 8/8 (100%)
+- key facts found: 9/9 (100%)
 - tool choice right: 10/10 (100%)
 - citations verified: 23/24 (96%)
 - invented citations: 0 (should be 0)

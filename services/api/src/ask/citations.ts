@@ -123,10 +123,25 @@ function resolve(marker: Marker, sources: CitationSources): Source | undefined {
   return contract && { kind: "contract", contract, text: contractText(contract.result) };
 }
 
+function fileNameOf(source: Source): string {
+  const name = source.kind === "chunk" ? source.chunk.file_name : source.contract.file_name;
+  return name.toLowerCase();
+}
+
 export function verifyCitations(answer: string, sources: CitationSources): AskCitation[] {
   const citations: AskCitation[] = [];
-  for (const group of parse(answer)) {
-    const resolved = group.markers.map((marker) => ({ marker, source: resolve(marker, sources) }));
+  for (const parsed of parse(answer)) {
+    const resolved = parsed.markers.map((marker) => ({ marker, source: resolve(marker, sources) }));
+    // A file name in double quotes names the source, it is not wording copied from it. The 7b
+    // writes "saas-subscription.pdf" with Cloudhaven [contract:<id>], and every such citation
+    // came out as quote not found, in the eval and in the chat alike.
+    const names = new Set(
+      resolved.flatMap(({ source }) => (source === undefined ? [] : [fileNameOf(source)])),
+    );
+    const group = {
+      ...parsed,
+      quotes: parsed.quotes.filter((quote) => !names.has(quote.toLowerCase())),
+    };
     const found = resolved.map(({ source }) =>
       group.quotes.map((quote) => source !== undefined && contains(source.text, quote)),
     );

@@ -142,11 +142,23 @@ function runRules({ maxSteps, lookup }: RunRules) {
   let reminded = false;
   return createMiddleware({
     name: "RunRules",
-    wrapToolCall: (request, handler) => {
+    wrapToolCall: async (request, handler) => {
       const { toolCall } = request;
       const prepared = prepareToolArgs(toolCall.name, toolCall.args);
       if (prepared.ok) {
-        return handler({ ...request, toolCall: { ...toolCall, args: prepared.args } });
+        const result = await handler({
+          ...request,
+          toolCall: { ...toolCall, args: prepared.args },
+        });
+        if (prepared.note === undefined || !(result instanceof ToolMessage)) return result;
+        // After the result, like every note of a tool: outside the <document> block.
+        return new ToolMessage({
+          content: `${result.text}
+${prepared.note}`,
+          tool_call_id: result.tool_call_id,
+          ...(result.name === undefined ? {} : { name: result.name }),
+          ...(result.status === undefined ? {} : { status: result.status }),
+        });
       }
       return new ToolMessage({
         content: prepared.message,

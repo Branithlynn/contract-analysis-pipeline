@@ -159,9 +159,23 @@ function lenient(key: string, value: unknown): unknown {
 }
 
 export type PreparedArgs =
-  | { ok: true; args: Record<string, unknown> }
+  // note: what the model is told on top of the result, about arguments the tool does not take.
+  | { ok: true; args: Record<string, unknown>; note?: string }
   // message: what the model gets instead of a result.
   | { ok: false; message: string };
+
+// The 3b looked for the statement of work with find_contracts {"query": "consulting statement of
+// work"}, and for the nda with {"document_type": "NDA"}. Both were dropped without a word, every
+// contract came back, and the model took the first one for its answer.
+function ignoredNote(tool: string, schema: z.ZodObject, args: Record<string, unknown>) {
+  const ignored = Object.keys(args).filter((key) => !(key in schema.shape));
+  if (ignored.length === 0) return undefined;
+  const text =
+    tool === "find_contracts" && ignored.includes("query")
+      ? " It does not search text. To search what the contracts say, call search_clauses with a query."
+      : "";
+  return `${tool} ignored these arguments, it does not take them: ${ignored.join(", ")}. The result is what the other arguments gave.${text}`;
+}
 
 // Checks the arguments of a tool call before the tool runs. langchain would do it too, and answer
 // a wrong one with the zod error and the stack of where it was thrown. The 7b read that for
@@ -180,7 +194,10 @@ export function prepareToolArgs(tool: string, raw: unknown): PreparedArgs {
     Object.entries(given).map(([key, value]) => [key, lenient(key, value)]),
   );
   const parsed = schema.safeParse(args);
-  if (parsed.success) return { ok: true, args };
+  if (parsed.success) {
+    const note = ignoredNote(tool, schema, args);
+    return note === undefined ? { ok: true, args } : { ok: true, args, note };
+  }
 
   const wrong = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "")))];
   const problems = wrong.map((key) => {
@@ -431,13 +448,16 @@ export function createAskTools(deps: AskToolDeps) {
     async ({ query, k, document_id }) => {
       const limit = Math.min(Math.max(k ?? DEFAULT_K, 1), MAX_K);
       const asked = document_id == null || document_id === "" ? undefined : document_id;
-      const documentId = deps.documentId ?? asked;
-      if (documentId !== undefined && getDocument(db, documentId) === undefined) {
-        return reply({
-          summary: "no such contract",
-          error: `No contract has the id ${documentId}. Get ids from find_contracts.`,
-        });
-      }
+      // An id nobody has is not a reason to return nothing. The 7b made one up
+      // ("NexusCorp_VendorX_SoftwareDevelopment_2024-01-01"), was told there is no such contract
+      // and gave that to the user as the answer. The search runs over all contracts instead and
+      // the result says so. A chat opened from a contract never gets here: its id was checked
+      // before the question started and wins over whatever the model passes.
+      const unknown =
+        deps.documentId === undefined && asked !== undefined && getDocument(db, asked) === undefined
+          ? asked
+          : undefined;
+      const documentId = deps.documentId ?? (unknown === undefined ? asked : undefined);
       let mode = "hybrid";
       let hits: ChunkHit[];
       try {
@@ -461,14 +481,20 @@ export function createAskTools(deps: AskToolDeps) {
         hits = keywordSearchRetrievalChunks(db, { query, k: limit, documentId });
       }
       const files = [...new Set(hits.map((hit) => hit.file_name))];
-      return reply({
-        summary:
-          hits.length === 0
-            ? `no passages for "${query}"`
-            : `${String(hits.length)} passages for "${query}" from ${files.join(", ")}`,
-        mode,
-        results: hits.map(hitFields),
-      });
+      const found =
+        hits.length === 0
+          ? `no passages for "${query}"`
+          : `${String(hits.length)} passages for "${query}" from ${files.join(", ")}`;
+      return reply(
+        {
+          summary: unknown === undefined ? found : `${found} (unknown contract id, searched all)`,
+          mode,
+          results: hits.map(hitFields),
+        },
+        unknown === undefined
+          ? undefined
+          : `No contract has the id ${unknown.slice(0, 80)}, so all contracts were searched. Each passage says which contract it is from. Contract ids come from find_contracts.`,
+      );
     },
     { name: "search_clauses", description: deps.descriptions.search_clauses, schema: SearchArgs },
   );

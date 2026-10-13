@@ -120,7 +120,8 @@
       "expect_facts": [],
       "expect_tools": [{ "any_of": ["find_contracts", "get_contract"] }],
       "must_not": ["5,000,000", "5000000", "5 000 000", "5 million"],
-      "must_not_money": true
+      "must_not_money": true,
+      "expect_words": [{ "any_of": ["no", "not", "none", "null", "not stated"] }]
     }
   ]
 }

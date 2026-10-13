@@ -202,6 +202,27 @@ describe("prepareToolArgs", () => {
     );
   });
 
+  it("notes the arguments a tool does not take, and runs with the others", () => {
+    expect(prepareToolArgs("find_contracts", { auto_renewal: true, document_type: "NDA" })).toEqual(
+      {
+        ok: true,
+        args: { auto_renewal: true, document_type: "NDA" },
+        note: "find_contracts ignored these arguments, it does not take them: document_type. The result is what the other arguments gave.",
+      },
+    );
+    const text = prepareToolArgs("find_contracts", { query: "statement of work", k: 1 });
+    expect(text).toMatchObject({
+      ok: true,
+      note: expect.stringMatching(
+        /ignored these arguments, it does not take them: query, k\..* call search_clauses with a query\.$/,
+      ) as string,
+    });
+    // Only find_contracts is taken for a text search by mistake.
+    expect(prepareToolArgs("get_contract", { id: "abc", query: "term" })).toMatchObject({
+      note: "get_contract ignored these arguments, it does not take them: query. The result is what the other arguments gave.",
+    });
+  });
+
   it("leaves a tool it does not know to langchain", () => {
     expect(prepareToolArgs("delete_contracts", { all: true })).toEqual({
       ok: true,
@@ -329,11 +350,25 @@ describe("search_clauses", () => {
     expect((json["results"] as unknown[]).length).toBe(5);
   });
 
-  it("tells the model when the document id is not one of ours", async () => {
-    const { json } = await tools().search({ query: "liability", document_id: "msa.pdf" });
+  it("searches all contracts for an id that is not one of ours, and says so", async () => {
+    // The kind of id the 7b made up.
+    const invented = "NexusCorp_VendorX_SoftwareDevelopment_2024-01-01";
+    const { json, note, text } = await tools().search({
+      query: "liability limited to fees",
+      document_id: invented,
+    });
 
-    expect(json).toMatchObject({ summary: "no such contract" });
-    expect(json["error"]).toMatch(/find_contracts/);
+    const files = (json["results"] as { file_name: string }[]).map((r) => r.file_name);
+    expect(new Set(files)).toEqual(new Set(["msa.pdf", "order.pdf"]));
+    expect(note).toBe(
+      `No contract has the id ${invented}, so all contracts were searched. Each passage says which contract it is from. Contract ids come from find_contracts.`,
+    );
+    expect(summaryOf(text)).toMatch(/passages for .* \(unknown contract id, searched all\)$/);
+  });
+
+  it("adds nothing for an id that is one of ours, or for none", async () => {
+    expect((await tools().search({ query: "liability", document_id: MSA })).note).toBe("");
+    expect((await tools().search({ query: "liability" })).note).toBe("");
   });
 
   it("falls back to keyword search when the query cannot be embedded", async () => {

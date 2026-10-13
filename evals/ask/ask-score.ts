@@ -41,7 +41,11 @@ const AskCaseSchema = z.strictObject({
   must_not: z.array(z.string().min(1)),
   // The right answer is that there is no value, so any amount of money in the answer is wrong,
   // not only the one a must_not string spells out.
+  // A bare 0 counts as an amount too: "the total value is 0" is a value, and a wrong one.
   must_not_money: z.boolean().optional(),
+  // Words the answer has to have, matched as whole words, unlike the facts: "no" is not found in
+  // "notice". For an answer that has to say that something is not there.
+  expect_words: z.array(OneOf).optional(),
 });
 export type AskCase = z.infer<typeof AskCaseSchema>;
 
@@ -90,6 +94,31 @@ export function readAskCases(path: string): AskCases {
     throw new Error(`${path} is not a valid ask eval:\n${z.prettifyError(parsed.error)}`);
   }
   return parsed.data;
+}
+
+// What --cases takes: case ids, separated by commas, each one a full id or a glob over the ids
+// (scoped-warranty, nda*, *-value). The cases come back in the order of the file, each once.
+// Throws with a message meant for the terminal when a part matches nothing.
+export function selectAskCases(cases: readonly AskCase[], pattern: string): AskCase[] {
+  const parts = pattern
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
+  if (parts.length === 0) throw new Error("--cases is empty");
+  const matchers = parts.map((part) => {
+    const source = part
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replaceAll("*", ".*")
+      .replaceAll("?", ".");
+    return { part, test: new RegExp(`^${source}$`) };
+  });
+  for (const { part, test } of matchers) {
+    if (!cases.some((c) => test.test(c.id))) {
+      const ids = cases.map((c) => `  ${c.id}`).join("\n");
+      throw new Error(`no case matches "${part}". Available cases:\n${ids}`);
+    }
+  }
+  return cases.filter((c) => matchers.some(({ test }) => test.test(c.id)));
 }
 
 // How one question ended. timeout and error have no answer, and neither has step_limit.
@@ -193,6 +222,15 @@ export function moneyIn(answer: string): string[] {
   return [...new Set([...text.matchAll(MONEY)].map((m) => m[0].trim()))];
 }
 
+// A 0 that stands alone: not a digit of a number, a date, a clause number or a percentage.
+const ZERO = /(?<![\w.,:-])0(?:\.0+)?(?![\w%]|[.,:-]\d)/;
+
+// Whether an answer states zero as a value.
+export function statesZero(answer: string): boolean {
+  // "USD 0" is an amount already, not a second one.
+  return ZERO.test(answer.replace(CITATION, " ").replace(MONEY, " "));
+}
+
 export function scoreAsk(
   test: AskCase,
   corpus: readonly NamedContract[],
@@ -207,9 +245,14 @@ export function scoreAsk(
   const missedContracts = test.expect_contracts.filter((file) => !named.includes(file));
 
   // Not whole words like the names: the "%" in "9%" is part of the fact.
-  const missedFacts = test.expect_facts
-    .filter((fact) => !options(fact).some((option) => hasFact(option, answer, text)))
-    .map(label);
+  const words = test.expect_words ?? [];
+  const said = answer.replace(CITATION, " ");
+  const missedFacts = [
+    ...test.expect_facts.filter(
+      (fact) => !options(fact).some((option) => hasFact(option, answer, text)),
+    ),
+    ...words.filter((word) => !options(word).some((option) => sameText(option, said))),
+  ].map(label);
 
   // A call the step limit cut off did not run.
   const ran = outcome.steps.filter(
@@ -222,7 +265,9 @@ export function scoreAsk(
 
   const banned = test.must_not.filter((string) => text.includes(flat(string)));
   // An amount a must-not string already reports is not listed a second time.
-  const amounts = (test.must_not_money === true ? moneyIn(answer) : []).filter(
+  const stated =
+    test.must_not_money === true ? [...moneyIn(answer), ...(statesZero(answer) ? ["0"] : [])] : [];
+  const amounts = stated.filter(
     (amount) => !banned.some((string) => flat(amount).includes(flat(string))),
   );
 
@@ -234,8 +279,8 @@ export function scoreAsk(
     missed_contracts: missedContracts,
     extra_contracts: named.filter((file) => !test.expect_contracts.includes(file)),
     facts: {
-      correct: test.expect_facts.length - missedFacts.length,
-      total: test.expect_facts.length,
+      correct: test.expect_facts.length + words.length - missedFacts.length,
+      total: test.expect_facts.length + words.length,
     },
     missed_facts: missedFacts,
     tools_ok: missedTools.length === 0,

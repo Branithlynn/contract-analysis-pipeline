@@ -124,16 +124,25 @@ describe("POST /api/ask/stream", () => {
 
   it("ends with the step limit as a done event that has no answer", async () => {
     const { askStream } = await setup({
-      env: { ASK_MAX_STEPS: "2" },
+      env: { ASK_MAX_STEPS: "3" },
       script: () => toolCall("find_contracts", {}),
     });
 
     const events = parseStream((await askStream({ question: "Loop" })).payload);
 
-    expect(events.map((e) => e.event)).toEqual(["started", "step", "step", "step", "done"]);
+    // Two calls with their results, and the third call, which was not carried out.
+    expect(events.map((e) => e.event)).toEqual([
+      "started",
+      "step",
+      "step",
+      "step",
+      "step",
+      "step",
+      "done",
+    ]);
     expect(events.at(-1)).toMatchObject({
       event: "done",
-      data: { stopped: "step_limit", answer: null, steps: [{}, { result: "not run" }] },
+      data: { stopped: "step_limit", answer: null, steps: [{}, {}, { result: "not run" }] },
     });
   });
 
@@ -439,7 +448,7 @@ describe("GET /api/threads", () => {
 
   it("does not list a thread whose only question never finished", async () => {
     const { answer, get } = await setup({
-      env: { ASK_MAX_STEPS: "1" },
+      env: { ASK_MAX_STEPS: "3" },
       script: () => toolCall("find_contracts", {}),
     });
     const stopped = await answer({ question: "Loop", thread_id: "stopped" });
@@ -539,7 +548,7 @@ describe("GET /api/threads?q=", () => {
 
   it("does not find the question of a turn that never finished", async () => {
     const { answer, get } = await setup({
-      env: { ASK_MAX_STEPS: "1" },
+      env: { ASK_MAX_STEPS: "3" },
       script: () => toolCall("find_contracts", {}),
     });
     await answer({ question: "Does the unicorn clause apply?", thread_id: "stopped" });

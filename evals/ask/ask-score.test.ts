@@ -11,6 +11,8 @@ import {
   moneyIn,
   readAskCases,
   scoreAsk,
+  selectAskCases,
+  statesZero,
   type AskCase,
   type AskOutcome,
   type NamedContract,
@@ -116,6 +118,10 @@ describe("cases.json", () => {
     expect(byId.get("nda-total-value")?.must_not).toContain(String(amount));
     // And any other amount: the nda has no value at all.
     expect(byId.get("nda-total-value")?.must_not_money).toBe(true);
+    // And it has to say that there is none.
+    expect(byId.get("nda-total-value")?.expect_words).toEqual([
+      { any_of: ["no", "not", "none", "null", "not stated"] },
+    ]);
   });
 
   it("names a contract by its counterparty, not by a word for the kind of document", () => {
@@ -146,6 +152,33 @@ describe("AskCasesSchema", () => {
       cases: [test({ expect_contracts: ["a.pdf"] }), test({ expect_contracts: ["a.pdf"] })],
     });
     expect(twice.success).toBe(false);
+  });
+});
+
+describe("selectAskCases", () => {
+  const cases = ["auto-renewing", "scoped-warranty", "nda-total-value", "sow-end-date"].map((id) =>
+    test({ id }),
+  );
+  const ids = (pattern: string) => selectAskCases(cases, pattern).map((c) => c.id);
+
+  it("takes ids and globs, separated by commas, and keeps the order of the file", () => {
+    expect(ids("scoped-warranty")).toEqual(["scoped-warranty"]);
+    expect(ids("sow-end-date, auto-renewing")).toEqual(["auto-renewing", "sow-end-date"]);
+    expect(ids("s*")).toEqual(["scoped-warranty", "sow-end-date"]);
+    expect(ids("*-value,nda*,scoped-warrant?")).toEqual(["scoped-warranty", "nda-total-value"]);
+    expect(ids("*")).toHaveLength(4);
+  });
+
+  it("matches the whole id, and reads a dot as a dot", () => {
+    expect(() => ids("scoped")).toThrow(/no case matches "scoped"/);
+    expect(() => ids("sow.end-date")).toThrow(/no case matches/);
+  });
+
+  it("names the part that matches nothing and lists the cases", () => {
+    expect(() => ids("auto-renewing,nope*")).toThrow(
+      /no case matches "nope\*"\. Available cases:\n {2}auto-renewing\n {2}scoped-warranty/,
+    );
+    expect(() => ids(" , ")).toThrow(/--cases is empty/);
   });
 });
 
@@ -293,6 +326,45 @@ describe("scoreAsk", () => {
     expect(
       forbidden("Northpeak: no value, signed 2026-03-01, 24 months [contract:9f2e4000]."),
     ).toEqual([]);
+  });
+
+  it("takes a bare 0 for an amount where money is not allowed", () => {
+    const nda = test({
+      expect_contracts: ["mutual-nda.docx"],
+      expect_facts: [],
+      must_not_money: true,
+    });
+    const forbidden = (answer: string) =>
+      scoreAsk(nda, CORPUS, outcome({ answer, citations: [] })).forbidden;
+
+    // What the 7b answered on ask.v3.
+    expect(forbidden("The total value of the Northpeak NDA is 0 [contract:0e36fc62].")).toEqual([
+      "0",
+    ]);
+    expect(forbidden("Northpeak: the value is 0.00.")).toEqual(["0"]);
+    expect(forbidden("Northpeak: USD 0.")).toEqual(["USD 0"]);
+    expect(statesZero("signed 2026-10-09, clause 10.0, 0% uplift, 30 days, 0.5 hours")).toBe(false);
+    // Not for a case without the flag.
+    expect(
+      scoreAsk(test(), CORPUS, outcome({ answer: "Cloudhaven 2026-11-15, 0 risks." })).forbidden,
+    ).toEqual([]);
+  });
+
+  it("wants one of the words that say there is nothing, as whole words", () => {
+    const nda = test({
+      expect_contracts: ["mutual-nda.docx"],
+      expect_facts: [],
+      expect_words: [{ any_of: ["no", "not", "none", "null", "not stated"] }],
+    });
+    const score = (answer: string) => scoreAsk(nda, CORPUS, outcome({ answer, citations: [] }));
+
+    expect(score("The Northpeak NDA has no total value.").facts).toEqual({ correct: 1, total: 1 });
+    expect(score("Northpeak: total_contract_value is null.").missed_facts).toEqual([]);
+    expect(score("Northpeak: a value is not stated.").missed_facts).toEqual([]);
+    // "no" is not in "Northpeak", "notice" or "know", and not in a citation.
+    const missed = score("Northpeak: you know the notice value is 0 [contract:no].");
+    expect(missed.missed_facts).toEqual(["no or not or none or null or not stated"]);
+    expect(askPassed("done", missed)).toBe(false);
   });
 
   it("finds amounts of money in the forms an answer writes them", () => {

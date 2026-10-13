@@ -2,7 +2,7 @@
 // extraction for each one (from the extraction eval's expected values, see seed.ts), asks the
 // questions in cases.json through the same runAsk the api calls, and scores each answer. No http
 // and no queue.
-// Usage: npm run eval:ask -- --provider <p> --model <m> [--prompt <v>] [--repeat <n>] [--embed-provider <p>] [--embed-model <m>]
+// Usage: npm run eval:ask -- --provider <p> --model <m> [--prompt <v>] [--cases <ids or globs>] [--repeat <n>] [--embed-provider <p>] [--embed-model <m>]
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
@@ -47,6 +47,7 @@ import {
   fileName,
   readAskCases,
   scoreAsk,
+  selectAskCases,
   type AskCase,
   type AskCases,
   type AskOutcome,
@@ -61,7 +62,7 @@ const CASES = join(ROOT, "evals", "ask", "cases.json");
 // missing, and every question after that would fail the same way.
 const MAX_ERRORS_IN_A_ROW = 2;
 
-const USAGE = `usage: npm run eval:ask -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt ${AskPromptVersion.options.join("|")}] [--repeat <n>] [--embed-provider ${EmbedProviderName.options.join("|")}] [--embed-model <name>]`;
+const USAGE = `usage: npm run eval:ask -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt ${AskPromptVersion.options.join("|")}] [--cases <id or glob, comma separated>] [--repeat <n>] [--embed-provider ${EmbedProviderName.options.join("|")}] [--embed-model <name>]`;
 
 function fail(text: string): never {
   console.error(`${text}\n${USAGE}`);
@@ -151,6 +152,7 @@ async function main(): Promise<void> {
     provider?: string | undefined;
     model?: string | undefined;
     prompt?: string | undefined;
+    cases?: string | undefined;
     repeat: string;
     "embed-provider"?: string | undefined;
     "embed-model"?: string | undefined;
@@ -161,6 +163,7 @@ async function main(): Promise<void> {
         provider: { type: "string" },
         model: { type: "string" },
         prompt: { type: "string" },
+        cases: { type: "string" },
         repeat: { type: "string", default: "1" },
         "embed-provider": { type: "string" },
         "embed-model": { type: "string" },
@@ -196,8 +199,10 @@ async function main(): Promise<void> {
   // loadConfig's error lists field paths and problems, never the values, so keys can't leak here.
   const config = loadConfig(env);
   let cases: AskCases;
+  let asked: AskCase[];
   try {
     cases = readAskCases(CASES);
+    asked = values.cases === undefined ? cases.cases : selectAskCases(cases.cases, values.cases);
   } catch (err) {
     fail(message(err));
   }
@@ -269,7 +274,7 @@ async function main(): Promise<void> {
     };
   }
 
-  const planned = cases.cases.length * repeat;
+  const planned = asked.length * repeat;
   const runs: AskRun[] = [];
   let stopped: string | null = null;
   try {
@@ -293,7 +298,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    run: for (const test of cases.cases) {
+    run: for (const test of asked) {
       for (let attempt = 1; attempt <= repeat; attempt++) {
         const label = repeat === 1 ? test.id : `${test.id} #${String(attempt)}`;
         console.error(`asking ${label}`);
@@ -332,11 +337,14 @@ async function main(): Promise<void> {
     max_steps: config.ASK_MAX_STEPS,
     timeout_ms: config.ASK_TIMEOUT_MS,
   };
-  const report = renderAskReport({
-    header,
-    runs,
-    ...(stopNote === null ? {} : { notes: [stopNote] }),
-  });
+  // The whole corpus is indexed either way: a question about one contract is still asked with
+  // the others there to be confused with.
+  const partNote =
+    asked.length === cases.cases.length
+      ? null
+      : `Only ${String(asked.length)} of ${String(cases.cases.length)} cases were asked (--cases ${values.cases ?? ""}): ${asked.map((c) => c.id).join(", ")}. The totals are not those of a full run.`;
+  const notes = [partNote, stopNote].filter((note) => note !== null);
+  const report = renderAskReport({ header, runs, ...(notes.length === 0 ? {} : { notes }) });
 
   // With the time, like the other evals, so two runs on one day do not replace each other.
   const name = [

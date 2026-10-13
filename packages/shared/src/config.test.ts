@@ -20,6 +20,21 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ PROMPT_VERSION: "extract.v9" })).toThrow("PROMPT_VERSION");
   });
 
+  it("refuses an ASK_MAX_STEPS below 3 and says why", () => {
+    expect(loadConfig({ ASK_MAX_STEPS: "3" }).ASK_MAX_STEPS).toBe(3);
+    for (const steps of ["1", "2"]) {
+      expect(() => loadConfig({ ASK_MAX_STEPS: steps })).toThrow(
+        /ASK_MAX_STEPS has to be at least 3: a reply without a lookup is sent back once, then the agent makes the search itself/,
+      );
+    }
+  });
+
+  it("takes an ask prompt version it knows and defaults to ask.v3", () => {
+    expect(loadConfig({}).ASK_PROMPT_VERSION).toBe("ask.v3");
+    expect(loadConfig({ ASK_PROMPT_VERSION: "ask.v2" }).ASK_PROMPT_VERSION).toBe("ask.v2");
+    expect(() => loadConfig({ ASK_PROMPT_VERSION: "ask.v9" })).toThrow(/ASK_PROMPT_VERSION/);
+  });
+
   it("coerces numeric strings", () => {
     const config = loadConfig({ MAX_UPLOAD_MB: "5", WORKER_CONCURRENCY: "4" });
     expect(config.MAX_UPLOAD_MB).toBe(5);
