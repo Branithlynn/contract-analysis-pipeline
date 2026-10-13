@@ -30,6 +30,8 @@ const summary: DocumentSummary = {
   created_at: NOW,
   updated_at: NOW,
   vendor_name: null,
+  customer_name: null,
+  governing_law: null,
   total_contract_value: null,
   expiration_date: null,
   current_term_end: null,

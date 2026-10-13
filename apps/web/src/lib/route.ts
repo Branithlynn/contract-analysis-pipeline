@@ -63,3 +63,31 @@ export function useRoute(): [Route, (route: Route, opts?: { replace?: boolean })
   }, []);
   return [readRoute(search), navigate];
 }
+
+const QUERY = "q";
+
+export function readSearchQuery(search: string): string {
+  return new URLSearchParams(search).get(QUERY) ?? "";
+}
+
+// Relative url with the documents search in ?q=. Other params stay as they are.
+export function searchQueryHref(search: string, query: string): string {
+  const params = new URLSearchParams(search);
+  if (query === "") params.delete(QUERY);
+  else params.set(QUERY, query);
+  const text = params.toString();
+  return text === "" ? "." : `?${text}`;
+}
+
+// The search on the documents view lives in ?q=, so a reload and the back button from a document
+// come back to the same filtered list. Always replace: every keystroke as a history entry would
+// make back useless.
+export function useSearchQuery(): [string, (query: string) => void] {
+  const query = useSyncExternalStore(subscribe, () => readSearchQuery(window.location.search));
+  const setQuery = useCallback((next: string) => {
+    if (next === readSearchQuery(window.location.search)) return;
+    window.history.replaceState(null, "", searchQueryHref(window.location.search, next));
+    window.dispatchEvent(new Event(CHANGE_EVENT));
+  }, []);
+  return [query, setQuery];
+}

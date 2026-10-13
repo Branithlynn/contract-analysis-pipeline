@@ -16,7 +16,7 @@ import {
   type ChatAction,
   type ChatState,
 } from "./chatModel.js";
-import { readRoute, routeHref } from "./route.js";
+import { readRoute, readSearchQuery, routeHref, searchQueryHref } from "./route.js";
 
 const MODEL = { provider: "ollama", model: "qwen2.5:7b-instruct" } as const;
 const DOC = "00000000-0000-4000-8000-000000000001";
@@ -646,5 +646,28 @@ describe("route", () => {
     const route = { view: "chat", threadId: "t-1_A", aboutId: null } as const;
 
     expect(readRoute(routeHref("", route))).toEqual(route);
+  });
+});
+
+describe("the documents search in the address", () => {
+  it("reads ?q=, and nothing as an empty search", () => {
+    expect(readSearchQuery("?q=atlas+ridge&doc=abc")).toBe("atlas ridge");
+    expect(readSearchQuery("?doc=abc")).toBe("");
+    expect(readSearchQuery("")).toBe("");
+  });
+
+  it("writes the search and keeps the open document and the view", () => {
+    expect(searchQueryHref("?doc=abc", "société")).toBe("?doc=abc&q=soci%C3%A9t%C3%A9");
+    expect(readSearchQuery(searchQueryHref("?view=chat", "a&b=c"))).toBe("a&b=c");
+  });
+
+  it("takes an emptied search out of the address again", () => {
+    expect(searchQueryHref("?doc=abc&q=atlas", "")).toBe("?doc=abc");
+    expect(searchQueryHref("?q=atlas", "")).toBe(".");
+  });
+
+  it("is kept by a route change", () => {
+    const href = routeHref("?q=atlas", { view: "chat", threadId: null, aboutId: null });
+    expect(readSearchQuery(href)).toBe("atlas");
   });
 });

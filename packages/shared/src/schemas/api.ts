@@ -47,6 +47,9 @@ export const DocumentSummarySchema = z.object({
   result_prompt_version: z.string().nullable(),
   // Everything below comes from the extraction, so it is null until one exists.
   vendor_name: z.string().nullable(),
+  // Not shown in the list, the search field on it looks in them.
+  customer_name: z.string().nullable(),
+  governing_law: z.string().nullable(),
   total_contract_value: StrictMoney.nullable(),
   expiration_date: z.iso.date().nullable(),
   // End of the term the contract is in today. Later than expiration_date once an auto-renewing
@@ -311,6 +314,13 @@ export const ThreadSummarySchema = z.object({
   // The contract the thread is about, when it was started from one.
   document_id: z.string().nullable(),
   updated_at: Timestamp,
+  // Only in the answer to a search (?q=): the text around the first match in what was asked and
+  // answered, in pieces, so the page can mark the matches without parsing markup. Null when
+  // only the title matches.
+  snippet: z
+    .array(z.object({ text: z.string(), match: z.boolean() }))
+    .nullable()
+    .optional(),
 });
 export type ThreadSummary = z.infer<typeof ThreadSummarySchema>;
 

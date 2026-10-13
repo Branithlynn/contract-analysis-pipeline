@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, ArrowUpDown, Clock, Download, SearchX } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DocumentSummary } from "@nexus/shared";
 import { exportCsvUrl } from "../api/client.js";
 import { useDocuments } from "../api/hooks.js";
@@ -14,8 +14,16 @@ import {
   plural,
 } from "../lib/format.js";
 import { providerLabel, shortModelName } from "../lib/modelPicker.js";
+import { readSearchQuery, useSearchQuery } from "../lib/route.js";
 import { isPlainClick, selectionHref } from "../lib/selection.js";
-import { countByStatus, expiresLabel, sortDocuments, type SortKey } from "../lib/tableModel.js";
+import {
+  countByStatus,
+  expiresLabel,
+  filterDocuments,
+  sortDocuments,
+  type SortKey,
+} from "../lib/tableModel.js";
+import { SearchField, useDebounced, useSlashFocus } from "./SearchField.js";
 import { StatusChip } from "./StatusBadge.js";
 
 interface Props {
@@ -115,6 +123,27 @@ function Alerts({ doc }: { doc: DocumentSummary }) {
   );
 }
 
+// Long enough to skip the keystrokes in the middle of a word, short enough not to be noticed.
+const SEARCH_DEBOUNCE_MS = 150;
+
+// The text in the search field and the query the list is filtered by, which follows it a moment
+// later and is what goes into ?q=.
+function useDocumentSearch(): { text: string; query: string; setText: (text: string) => void } {
+  const [urlQuery, setUrlQuery] = useSearchQuery();
+  const [text, setText] = useState(urlQuery);
+  const query = useDebounced(text, SEARCH_DEBOUNCE_MS);
+  useEffect(() => {
+    setUrlQuery(query);
+  }, [query, setUrlQuery]);
+  // Back and forward change the address without going through the field, so it follows them.
+  useEffect(() => {
+    const onPop = () => setText(readSearchQuery(window.location.search));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  return { text, query, setText };
+}
+
 function TableSkeleton() {
   return (
     <div className="table-skeleton" aria-label="Loading documents">
@@ -130,9 +159,18 @@ export function DocumentsTable({ selectedId, onSelect }: Props) {
   // The next thing to act on first: the closest notice deadline.
   const [sortKey, setSortKey] = useState<SortKey>("notice");
 
+  const search = useDocumentSearch();
+  const searchRef = useRef<HTMLInputElement>(null);
+  useSlashFocus(searchRef);
+
   const data = documents.data;
-  const rows = useMemo(() => sortDocuments(data ?? [], sortKey), [data, sortKey]);
+  // Sorted first, then filtered: a search narrows the list and leaves its order alone.
+  const rows = useMemo(
+    () => filterDocuments(sortDocuments(data ?? [], sortKey), search.query),
+    [data, sortKey, search.query],
+  );
   const counts = useMemo(() => countByStatus(data ?? []), [data]);
+  const searching = search.query.trim() !== "";
 
   if (data === undefined) {
     return documents.error ? (
@@ -142,7 +180,7 @@ export function DocumentsTable({ selectedId, onSelect }: Props) {
     );
   }
 
-  if (rows.length === 0) {
+  if (data.length === 0) {
     return (
       <div className="empty">
         <SearchX size={24} aria-hidden="true" />
@@ -174,9 +212,23 @@ export function DocumentsTable({ selectedId, onSelect }: Props) {
   return (
     <section className="documents" aria-label="Documents">
       <div className="documents-toolbar">
-        <p className="tone-muted">
-          {plural(data.length, "document")}: {counts.processing + counts.queued} in progress,{" "}
-          {counts.needs_review} to review, {counts.failed} failed
+        <SearchField
+          label="Search documents"
+          shortcut="/"
+          value={search.text}
+          onChange={search.setText}
+          inputRef={searchRef}
+        />
+        {/* Polite: the count is read out when a search changes it, without interrupting typing. */}
+        <p className="tone-muted documents-summary" aria-live="polite">
+          {searching ? (
+            `${String(rows.length)} of ${plural(data.length, "document")}`
+          ) : (
+            <>
+              {plural(data.length, "document")}: {counts.processing + counts.queued} in progress,{" "}
+              {counts.needs_review} to review, {counts.failed} failed
+            </>
+          )}
         </p>
         <a className="button button-quiet" href={exportCsvUrl()}>
           <Download size={14} aria-hidden="true" />
@@ -189,7 +241,25 @@ export function DocumentsTable({ selectedId, onSelect }: Props) {
         <p className="notice notice-error">Could not refresh: {documents.error.message}</p>
       )}
 
-      <div className="table-scroll">
+      {rows.length === 0 && (
+        <div className="empty">
+          <SearchX size={24} aria-hidden="true" />
+          <p className="empty-title">No documents match “{search.query.trim()}”</p>
+          <p>The search looks at vendor, customer, file name, governing law and model.</p>
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              search.setText("");
+              searchRef.current?.focus();
+            }}
+          >
+            Clear the search
+          </button>
+        </div>
+      )}
+
+      <div className="table-scroll" hidden={rows.length === 0}>
         <table className="documents-table">
           <thead>
             <tr>

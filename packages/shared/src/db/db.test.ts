@@ -333,7 +333,7 @@ describe("migration 5: failed runs", () => {
       );
       insertDocument(db, "old", { status: "completed" });
 
-      expect(migrate(db)).toEqual([5]);
+      expect(migrate(db)).toEqual(MIGRATIONS.filter((m) => m.version > 4).map((m) => m.version));
 
       expect(db.prepare("SELECT fallback_needs_review AS f FROM documents").get()).toEqual({
         f: null,
@@ -347,6 +347,41 @@ describe("migration 5: failed runs", () => {
       insert.run("old", 2, NOW);
       expect(() => insert.run("old", 2, NOW)).toThrow(/UNIQUE/);
       expect(() => insert.run("missing", 1, NOW)).toThrow(/FOREIGN KEY/);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("migration 6: thread index", () => {
+  it("adds an empty index that is searchable and takes one row per thread", () => {
+    const db = openMemoryDb();
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((m) => m.version <= 5),
+      );
+      insertDocument(db, "old", { status: "completed" });
+
+      expect(migrate(db)).toEqual(MIGRATIONS.filter((m) => m.version > 5).map((m) => m.version));
+
+      expect(db.prepare("SELECT COUNT(*) AS n FROM documents").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM thread_index").get()).toEqual({ n: 0 });
+      const insert = db.prepare(
+        "INSERT INTO thread_index (thread_id, title, updated_at, body) VALUES (?, 'Renewals', ?, 'Only the msa renews.')",
+      );
+      insert.run("t1", NOW);
+      expect(() => insert.run("t1", NOW)).toThrow(/UNIQUE/);
+      const match = db.prepare<[string]>(
+        "SELECT rowid FROM thread_index_fts WHERE thread_index_fts MATCH ?",
+      );
+      expect(match.all("renewals")).toHaveLength(1);
+      expect(match.all("msa")).toHaveLength(1);
+      // The triggers take a changed and a deleted row out of the full text index again.
+      db.prepare("UPDATE thread_index SET body = 'Nothing renews.' WHERE thread_id = 't1'").run();
+      expect(match.all("msa")).toHaveLength(0);
+      db.prepare("DELETE FROM thread_index").run();
+      expect(match.all("renewals")).toHaveLength(0);
     } finally {
       db.close();
     }

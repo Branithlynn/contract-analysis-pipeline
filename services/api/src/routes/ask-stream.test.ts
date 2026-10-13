@@ -383,6 +383,107 @@ describe("GET /api/threads", () => {
   });
 });
 
+describe("GET /api/threads?q=", () => {
+  // Answers each question with a sentence of its own, so a word can be in an answer only.
+  const talks: ChatScript = (messages) => {
+    const { question } = currentTurn(messages);
+    if (question.includes("renew")) return new AIMessage(`Only msa.pdf renews [contract:${MSA}].`);
+    if (question.includes("order")) return new AIMessage("Delivery is to the site in Hamburg.");
+    return new AIMessage("Notice is due sixty days before the term ends.");
+  };
+
+  async function chats() {
+    const server = await setup({ script: talks });
+    await server.answer({ question: "Which contracts renew?", thread_id: "first" });
+    await server.answer({
+      question: "What does the order say?",
+      thread_id: "second",
+      document_id: ORDER,
+    });
+    await server.answer({ question: "And when is notice due?", thread_id: "first" });
+    const search = async (q: string) =>
+      ThreadSummarySchema.array().parse(
+        (await server.get(`/api/threads?q=${encodeURIComponent(q)}`)).json(),
+      );
+    return { ...server, search };
+  }
+
+  it("finds a chat by its title", async () => {
+    const { search } = await chats();
+
+    const hits = await search("contracts renew");
+
+    expect(hits.map((t) => [t.thread_id, t.title, t.document_id])).toEqual([
+      ["first", "Which contracts renew?", null],
+    ]);
+  });
+
+  it("finds a chat by what was said in it and shows the text around the match", async () => {
+    const { search } = await chats();
+
+    const [hit, ...rest] = await search("hamburg");
+
+    expect(rest).toEqual([]);
+    expect(hit).toMatchObject({
+      thread_id: "second",
+      title: "What does the order say?",
+      document_id: ORDER,
+    });
+    expect(hit?.snippet?.filter((part) => part.match)).toEqual([{ text: "Hamburg", match: true }]);
+    expect(hit?.snippet?.map((part) => part.text).join("")).toContain(
+      "Delivery is to the site in Hamburg.",
+    );
+  });
+
+  it("finds a later question of a chat, not only its first", async () => {
+    const { search } = await chats();
+
+    expect((await search("sixty days")).map((t) => t.thread_id)).toEqual(["first"]);
+  });
+
+  it("lists the matches newest first", async () => {
+    const { search } = await chats();
+
+    // "say" is in the second chat's question, "the" in both. The first chat was asked in last.
+    expect((await search("the")).map((t) => t.thread_id)).toEqual(["first", "second"]);
+  });
+
+  it("is empty when nothing matches, and for a query without words", async () => {
+    const { search } = await chats();
+
+    expect(await search("unicorn")).toEqual([]);
+    expect(await search("?!")).toEqual([]);
+  });
+
+  it("lists everything, without snippets, for an empty query", async () => {
+    const { get } = await chats();
+
+    const all = ThreadSummarySchema.array().parse((await get("/api/threads?q=%20")).json());
+
+    expect(all.map((t) => t.thread_id)).toEqual(["first", "second"]);
+    expect(all.every((t) => t.snippet === undefined)).toBe(true);
+  });
+
+  it("does not find the question of a turn that never finished", async () => {
+    const { answer, get } = await setup({
+      env: { ASK_MAX_STEPS: "1" },
+      script: () => toolCall("find_contracts", {}),
+    });
+    await answer({ question: "Does the unicorn clause apply?", thread_id: "stopped" });
+
+    expect((await get("/api/threads?q=unicorn")).json()).toEqual([]);
+  });
+
+  it("refuses a query that is too long", async () => {
+    const { get } = await chats();
+
+    const res = await get(`/api/threads?q=${"a".repeat(201)}`);
+
+    expect(res.statusCode).toBe(400);
+    expect(ErrorBodySchema.parse(res.json()).error.code).toBe("VALIDATION_ERROR");
+  });
+});
+
 describe("GET /api/threads/:id", () => {
   it("returns the questions and answers with trace, model and checked citations", async () => {
     const { answer, get } = await setup({ script: renewals });

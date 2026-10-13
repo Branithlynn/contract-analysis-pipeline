@@ -1,5 +1,6 @@
 import type { DocumentStatus, DocumentSummary, Severity } from "@nexus/shared";
 import { formatDate } from "./format.js";
+import { shortModelName } from "./modelPicker.js";
 
 export type SortKey = "newest" | "notice" | "risk";
 
@@ -86,4 +87,43 @@ export function countByStatus(docs: readonly DocumentSummary[]): StatusCounts {
     if (doc.status === "completed" && doc.needs_review) counts.needs_review += 1;
   }
   return counts;
+}
+
+// Lower case and without accents, so "societe" finds "Société" and "MUNCHEN" finds "München".
+export function foldText(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase();
+}
+
+// What the search field looks in: the names on the row and under it, the two extracted fields a
+// contract is usually looked up by, and the model chip, as written on the chip and in full.
+function searchText(doc: DocumentSummary): string {
+  return foldText(
+    [
+      doc.vendor_name,
+      doc.customer_name,
+      doc.original_name,
+      doc.governing_law,
+      doc.result_model,
+      doc.result_model === null ? null : shortModelName(doc.result_model),
+    ]
+      .filter((part) => part !== null)
+      .join("\n"),
+  );
+}
+
+// The documents that have every word of the query somewhere in those fields, in the order they
+// came in, so the table's sort is kept. An empty query keeps them all.
+export function filterDocuments(
+  docs: readonly DocumentSummary[],
+  query: string,
+): DocumentSummary[] {
+  const words = foldText(query).split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [...docs];
+  return docs.filter((doc) => {
+    const text = searchText(doc);
+    return words.every((word) => text.includes(word));
+  });
 }

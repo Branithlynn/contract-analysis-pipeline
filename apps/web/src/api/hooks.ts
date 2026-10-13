@@ -1,4 +1,10 @@
-import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  skipToken,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { TERMINAL_STATUSES, type DocumentStatus, type ModelSelection } from "@nexus/shared";
 import {
   getChunk,
@@ -109,12 +115,15 @@ export function useInvalidateDocuments() {
 
 export const THREADS_KEY = ["threads"] as const;
 
-// The earlier chats. Refreshed by the chat itself after every answer.
-export function useThreads() {
+// The earlier chats, or the ones a search finds. Refreshed by the chat itself after every answer:
+// the key starts with THREADS_KEY, so that reaches the searches too.
+export function useThreads(query = "") {
   return useQuery({
-    queryKey: THREADS_KEY,
-    queryFn: ({ signal }) => getThreads(signal),
+    queryKey: [...THREADS_KEY, query],
+    queryFn: ({ signal }) => getThreads(query, signal),
     staleTime: 30_000,
+    // The list that is up stays up while the next search loads, instead of a skeleton per word.
+    placeholderData: keepPreviousData,
   });
 }
 

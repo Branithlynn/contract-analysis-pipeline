@@ -12,12 +12,20 @@ import {
   type AskStep,
   type ThreadMessage,
 } from "@nexus/shared";
-import { getRetrievalChunk, type Db, type Embedder, type ModelSelection } from "@nexus/shared/node";
+import {
+  getRetrievalChunk,
+  listIndexedThreadIds,
+  type Db,
+  type Embedder,
+  type ModelSelection,
+} from "@nexus/shared/node";
 import type { ReadContext } from "../services/dto.js";
 import type { ChatModels } from "./chat-models.js";
 import { verifyCitations, type CitationSources } from "./citations.js";
 import { buildAskSystemPrompt } from "./prompt.js";
 import { isLookupReminder, lookupReminder, LOOKUP_REMINDER_STEP } from "./reminder.js";
+import { writeThreadIndex } from "./thread-index.js";
+import { listThreadIds } from "./threads.js";
 import { createAskTools, loadContract, summaryOf } from "./tools.js";
 
 export interface AskDeps {
@@ -270,6 +278,16 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
       : [];
   await agent.graph.updateState(thread, { messages: [...removals(between), ...kept] });
 
+  // Only here, after a turn that finished: the paths above that roll a question back return or
+  // throw before this, so the search index never holds a question the thread does not.
+  try {
+    await indexThread({ db, threads: deps.threads, log, context }, input.threadId);
+  } catch (err) {
+    // The answer is there and the thread has it. Search finds the chat again after the next
+    // turn or the next startup.
+    log.warn({ threadId: input.threadId, err }, "could not update the thread search index");
+  }
+
   return {
     stopped: "done",
     answer,
@@ -323,4 +341,26 @@ export async function readThread(
   }
   if (messages.length === 0) return undefined;
   return { messages, document_id: documentId, updated_at: checkpoint.data.ts };
+}
+
+type ThreadDeps = Parameters<typeof readThread>[0];
+
+// Writes the thread as it is now to the search index over earlier chats. Read back from the
+// store, not taken from the turn that just ran, so the index holds what a reload shows.
+// Returns false for a thread without a finished turn.
+export async function indexThread(deps: ThreadDeps, threadId: string): Promise<boolean> {
+  const thread = await readThread(deps, threadId, false);
+  return thread !== undefined && writeThreadIndex(deps.db, threadId, thread);
+}
+
+// For api startup: the threads from before the index existed. Only the ones without a row, so a
+// restart with everything indexed reads no thread at all. Returns how many were added.
+export async function backfillThreadIndex(deps: ThreadDeps): Promise<number> {
+  const indexed = new Set(listIndexedThreadIds(deps.db));
+  let added = 0;
+  for (const threadId of listThreadIds(deps.db)) {
+    if (indexed.has(threadId)) continue;
+    if (await indexThread(deps, threadId)) added += 1;
+  }
+  return added;
 }

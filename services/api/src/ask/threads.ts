@@ -22,7 +22,8 @@ const ThreadRow = z.object({ thread_id: z.string() });
 // The threads that have a checkpoint, the one written to last first. The one place that reads the
 // package's table directly: its api can list the checkpoints of a thread, but not the threads.
 // Only the two key columns are used. Checkpoint ids are uuid v6, which sort by time.
-export function listThreadIds(db: Db, limit: number): string[] {
+// Without a limit: all of them, for the backfill of the search index.
+export function listThreadIds(db: Db, limit?: number): string[] {
   const rows = db
     .prepare<[number]>(
       `SELECT thread_id FROM checkpoints
@@ -31,7 +32,8 @@ export function listThreadIds(db: Db, limit: number): string[] {
        ORDER BY MAX(checkpoint_id) DESC
        LIMIT ?`,
     )
-    .all(limit);
+    // A negative LIMIT is sqlite's "no limit".
+    .all(limit ?? -1);
   return z
     .array(ThreadRow)
     .parse(rows)

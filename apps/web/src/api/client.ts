@@ -262,8 +262,11 @@ export async function askStream(
   }
 }
 
-export function getThreads(signal?: AbortSignal): Promise<ThreadSummary[]> {
-  return request(ThreadListSchema, "/api/threads", withSignal(signal));
+// query: only the chats that have these words in their title or in what was said, each with a
+// snippet around the match. Empty: all of them.
+export function getThreads(query = "", signal?: AbortSignal): Promise<ThreadSummary[]> {
+  const url = query === "" ? "/api/threads" : `/api/threads?q=${encodeURIComponent(query)}`;
+  return request(ThreadListSchema, url, withSignal(signal));
 }
 
 export function getThread(id: string, signal?: AbortSignal): Promise<ThreadDetail> {

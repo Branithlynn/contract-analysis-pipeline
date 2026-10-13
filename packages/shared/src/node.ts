@@ -3,6 +3,7 @@ export * from "./db/client.js";
 export * from "./db/migrations.js";
 export * from "./db/repositories.js";
 export * from "./db/retrieval.js";
+export * from "./db/thread-index.js";
 export * from "./embeddings/factory.js";
 export * from "./embeddings/mock.js";
 export * from "./embeddings/ollama.js";

@@ -191,6 +191,47 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 6,
+    name: "thread index for searching earlier chats",
+    sql: `
+      -- What was said in a chat thread, as plain text. The thread itself is kept by the langgraph
+      -- package in its own tables, serialized, which is nothing to search in. The api fills this
+      -- after every finished turn, and at startup for threads from before this table.
+      CREATE TABLE thread_index (
+        -- Its own integer key: the full text index points at it, and the rowid of a table
+        -- without one may change on VACUUM.
+        id INTEGER PRIMARY KEY,
+        thread_id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        -- The questions and answers in order, one block each.
+        body TEXT NOT NULL
+      );
+      CREATE INDEX idx_thread_index_updated_at ON thread_index (updated_at DESC);
+
+      -- Same setup as retrieval_chunks_fts: external content, kept in step by triggers.
+      CREATE VIRTUAL TABLE thread_index_fts USING fts5(
+        title,
+        body,
+        content = 'thread_index',
+        content_rowid = 'id',
+        tokenize = 'porter unicode61 remove_diacritics 2'
+      );
+      CREATE TRIGGER thread_index_fts_insert AFTER INSERT ON thread_index BEGIN
+        INSERT INTO thread_index_fts (rowid, title, body) VALUES (new.id, new.title, new.body);
+      END;
+      CREATE TRIGGER thread_index_fts_delete AFTER DELETE ON thread_index BEGIN
+        INSERT INTO thread_index_fts (thread_index_fts, rowid, title, body)
+          VALUES ('delete', old.id, old.title, old.body);
+      END;
+      CREATE TRIGGER thread_index_fts_update AFTER UPDATE OF title, body ON thread_index BEGIN
+        INSERT INTO thread_index_fts (thread_index_fts, rowid, title, body)
+          VALUES ('delete', old.id, old.title, old.body);
+        INSERT INTO thread_index_fts (rowid, title, body) VALUES (new.id, new.title, new.body);
+      END;
+    `,
+  },
 ];
 
 export const LATEST_VERSION = Math.max(0, ...MIGRATIONS.map((m) => m.version));

@@ -48,6 +48,8 @@ jobs:
       - run: npm run eval -- --provider mock
       # Same for search: the mock embedder scores low, the step only fails when the run breaks.
       - run: npm run eval:retrieval -- --embed-provider mock
+      # And for the agent: the mock chat model searches once and cites the first passage.
+      - run: npm run eval:ask -- --provider mock --embed-provider mock
 
   docker:
     runs-on: ubuntu-latest

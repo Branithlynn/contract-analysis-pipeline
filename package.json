@@ -32,6 +32,8 @@
     "eval": "tsx evals/run.ts",
     "preeval:retrieval": "tsc -b",
     "eval:retrieval": "tsx evals/ask/retrieval.ts",
+    "preeval:ask": "tsc -b",
+    "eval:ask": "tsx evals/ask/ask.ts",
     "preeval:rescore": "tsc -b",
     "eval:rescore": "tsx evals/rescore.ts",
     "preindex:backfill": "tsc -b",

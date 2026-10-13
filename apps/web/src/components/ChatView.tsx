@@ -26,6 +26,7 @@ import { useModelChoice } from "../lib/modelChoice.js";
 import { resultModelLabel } from "../lib/modelPicker.js";
 import { readRoute, routeHref, useRoute } from "../lib/route.js";
 import { isPlainClick } from "../lib/selection.js";
+import { SearchField, useDebounced } from "./SearchField.js";
 import { useToast } from "./Toasts.js";
 
 interface Props {
@@ -247,19 +248,25 @@ function Turn({
   );
 }
 
+// Longer than the documents search waits: every settled value here is a request.
+const THREAD_SEARCH_DEBOUNCE_MS = 250;
+
 function Threads({
-  threads,
   currentId,
   onOpen,
 }: {
-  threads: ReturnType<typeof useThreads>;
   currentId: string | null;
   onOpen: (thread: ThreadSummary) => void;
 }) {
   const headingId = useId();
+  const [text, setText] = useState("");
+  const query = useDebounced(text, THREAD_SEARCH_DEBOUNCE_MS).trim();
+  const threads = useThreads(query);
+  const searchRef = useRef<HTMLInputElement>(null);
   return (
     <aside className="chat-threads" aria-labelledby={headingId}>
       <h2 id={headingId}>Earlier chats</h2>
+      <SearchField label="Search chats" value={text} onChange={setText} inputRef={searchRef} />
       {threads.data === undefined ? (
         threads.error ? (
           <p className="tone-error small">Could not load them: {threads.error.message}</p>
@@ -270,9 +277,26 @@ function Threads({
           </div>
         )
       ) : threads.data.length === 0 ? (
-        <p className="tone-muted small">None yet. A chat shows up here after its first answer.</p>
+        query === "" ? (
+          <p className="tone-muted small">None yet. A chat shows up here after its first answer.</p>
+        ) : (
+          <div className="chat-threads-empty" role="status">
+            <p className="small">No chats match “{query}”</p>
+            <p className="tone-muted small">The search looks at titles and at what was said.</p>
+            <button
+              type="button"
+              className="button"
+              onClick={() => {
+                setText("");
+                searchRef.current?.focus();
+              }}
+            >
+              Clear the search
+            </button>
+          </div>
+        )
       ) : (
-        <ul className="plain-list">
+        <ul className="plain-list chat-thread-list">
           {threads.data.map((thread) => (
             <li key={thread.thread_id}>
               <a
@@ -286,6 +310,17 @@ function Threads({
                 }}
               >
                 <span className="chat-thread-title">{thread.title}</span>
+                {thread.snippet != null && (
+                  <span className="chat-thread-snippet">
+                    {thread.snippet.map((part, index) =>
+                      part.match ? (
+                        <mark key={index}>{part.text}</mark>
+                      ) : (
+                        <span key={index}>{part.text}</span>
+                      ),
+                    )}
+                  </span>
+                )}
                 <span className="chat-thread-when">{formatDateTime(thread.updated_at)}</span>
               </a>
             </li>
@@ -300,7 +335,6 @@ export function ChatView({ onOpenCitation }: Props) {
   const { state, ask, stop, askAgain, newChat, openThread } = useChat();
   const [, navigate] = useRoute();
   const { selected, picker } = useModelChoice();
-  const threads = useThreads();
   const documents = useDocuments();
   const toast = useToast();
   const [draft, setDraft] = useState("");
@@ -403,43 +437,46 @@ export function ChatView({ onOpenCitation }: Props) {
             </p>
           )}
 
-          {empty ? (
-            <div className="chat-empty">
-              <p className="empty-title">
-                {aboutName === null ? "Ask about the contracts" : "Ask about this contract"}
-              </p>
-              <p className="tone-muted">
-                Answers come from the analyzed contracts and say where each statement is from. Every
-                citation is checked against its source before you see it.
-              </p>
-              <ul className="plain-list chat-starters">
-                {(aboutName === null ? STARTERS : STARTERS_ABOUT).map((question) => (
-                  <li key={question}>
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={state.running}
-                      onClick={() => ask(question)}
-                    >
-                      {question}
-                    </button>
-                  </li>
+          {/* The one part of the conversation that scrolls. The composer under it stays put. */}
+          <div className="chat-scroll">
+            {empty ? (
+              <div className="chat-empty">
+                <p className="empty-title">
+                  {aboutName === null ? "Ask about the contracts" : "Ask about this contract"}
+                </p>
+                <p className="tone-muted">
+                  Answers come from the analyzed contracts and say where each statement is from.
+                  Every citation is checked against its source before you see it.
+                </p>
+                <ul className="plain-list chat-starters">
+                  {(aboutName === null ? STARTERS : STARTERS_ABOUT).map((question) => (
+                    <li key={question}>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={state.running}
+                        onClick={() => ask(question)}
+                      >
+                        {question}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <ol className="plain-list chat-messages">
+                {state.messages.map((message, index) => (
+                  <Turn
+                    key={message.id}
+                    message={message}
+                    onOpen={onOpenCitation}
+                    onAskAgain={lastFailed && index === state.messages.length - 1 ? askAgain : null}
+                  />
                 ))}
-              </ul>
-            </div>
-          ) : (
-            <ol className="plain-list chat-messages">
-              {state.messages.map((message, index) => (
-                <Turn
-                  key={message.id}
-                  message={message}
-                  onOpen={onOpenCitation}
-                  onAskAgain={lastFailed && index === state.messages.length - 1 ? askAgain : null}
-                />
-              ))}
-              <li ref={endRef} aria-hidden="true" />
-            </ol>
-          )}
+                <li ref={endRef} aria-hidden="true" />
+              </ol>
+            )}
+          </div>
 
           <form className="chat-composer" onSubmit={submit}>
             <label htmlFor={inputId} className="visually-hidden">
@@ -491,7 +528,6 @@ export function ChatView({ onOpenCitation }: Props) {
         </section>
 
         <Threads
-          threads={threads}
           currentId={state.threadId}
           onOpen={(thread) => {
             openThread(thread.thread_id).catch(() => {

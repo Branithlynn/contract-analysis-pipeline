@@ -127,3 +127,32 @@ export function writeRemembered(storage: StorageLike | undefined, selection: Mod
     // Nothing to do: the choice still holds for this page.
   }
 }
+
+// What the one button says that stands in for the picker on a narrow screen: the model in
+// effect and whether there is one. status is for the dot, statusText says the same in words,
+// so the state does not depend on telling colors apart.
+export interface CollapsedPicker {
+  label: string;
+  // The full model name, for the tooltip. Null when no model is in effect.
+  title: string | null;
+  status: "ready" | "none" | "loading" | "error";
+  statusText: string;
+}
+
+export function collapsedPicker(picker: PickerModel | undefined, failed: boolean): CollapsedPicker {
+  if (picker === undefined) {
+    return failed
+      ? { label: "Models", title: null, status: "error", statusText: "could not load models" }
+      : { label: "Models", title: null, status: "loading", statusText: "loading models" };
+  }
+  if (picker.selected === null) {
+    return { label: "No model", title: null, status: "none", statusText: "no model is available" };
+  }
+  const { provider, model } = picker.selected;
+  return {
+    label: shortModelName(model),
+    title: `${model} (${providerLabel(provider)})`,
+    status: "ready",
+    statusText: `available, ${providerLabel(provider)}`,
+  };
+}

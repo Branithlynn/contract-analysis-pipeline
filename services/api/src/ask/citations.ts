@@ -29,6 +29,12 @@ const MIN_QUOTE_CHARS = 3;
 // Citations with only this between them back the same sentence: [chunk:1], [chunk:2] and [chunk:3]
 const SAME_GROUP = /^[\s,;]*(?:and)?\s*$/i;
 
+// An answer as plain text, for the search index over earlier chats: a marker is an id, not
+// something that was said.
+export function stripCitationMarkers(answer: string): string {
+  return answer.replace(MARKER, "").replace(/[ \t]+([.,;:])/g, "$1");
+}
+
 interface Marker {
   marker: string;
   start: number;

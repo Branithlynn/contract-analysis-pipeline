@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelSelection, ModelsResponse } from "@nexus/shared";
 import {
   buildPicker,
+  collapsedPicker,
   effectiveSelection,
   providerLabel,
   readRemembered,
@@ -182,5 +183,43 @@ describe("labels", () => {
     );
     expect(shortReason("something else")).toBe("something else");
     expect(shortReason(null)).toBe("not available");
+  });
+});
+
+describe("collapsedPicker", () => {
+  it("names the model in effect, short on the button and in full for the tooltip", () => {
+    expect(collapsedPicker(buildPicker(models(), null), false)).toEqual({
+      label: "qwen2.5:7b",
+      title: "qwen2.5:7b-instruct (local)",
+      status: "ready",
+      statusText: "available, local",
+    });
+  });
+
+  it("follows the remembered model, and falls back when that one is gone", () => {
+    expect(collapsedPicker(buildPicker(models(), GPT), false).label).toBe("gpt-5-mini");
+    expect(collapsedPicker(buildPicker(models({ openai: false }), GPT), false).label).toBe(
+      "qwen2.5:7b",
+    );
+  });
+
+  it("says that no model is available", () => {
+    const none = buildPicker(models({ ollama: false, openai: false, anthropic: false }), CLAUDE);
+
+    expect(collapsedPicker(none, false)).toEqual({
+      label: "No model",
+      title: null,
+      status: "none",
+      statusText: "no model is available",
+    });
+  });
+
+  it("tells loading from failed while there is no list", () => {
+    expect(collapsedPicker(undefined, false).status).toBe("loading");
+    expect(collapsedPicker(undefined, true)).toMatchObject({
+      label: "Models",
+      status: "error",
+      statusText: "could not load models",
+    });
   });
 });

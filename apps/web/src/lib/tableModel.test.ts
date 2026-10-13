@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { DocumentSummary } from "@nexus/shared";
-import { countByStatus, expiresLabel, sortDocuments } from "./tableModel.js";
+import {
+  countByStatus,
+  expiresLabel,
+  filterDocuments,
+  foldText,
+  sortDocuments,
+} from "./tableModel.js";
 
 function doc(id: string, over: Partial<DocumentSummary> = {}): DocumentSummary {
   return {
@@ -21,6 +27,8 @@ function doc(id: string, over: Partial<DocumentSummary> = {}): DocumentSummary {
     created_at: "2026-10-01T00:00:00.000Z",
     updated_at: "2026-10-01T00:00:00.000Z",
     vendor_name: null,
+    customer_name: null,
+    governing_law: null,
     total_contract_value: null,
     expiration_date: null,
     current_term_end: null,
@@ -175,5 +183,105 @@ describe("expiresLabel", () => {
   it("is null without a date", () => {
     expect(expiresLabel(none)).toBeNull();
     expect(expiresLabel({ ...none, auto_renewal: true })).toBeNull();
+  });
+});
+
+describe("foldText", () => {
+  it("drops case and accents", () => {
+    expect(foldText("Société Générale MÜNCHEN Ångström")).toBe("societe generale munchen angstrom");
+  });
+});
+
+describe("filterDocuments", () => {
+  const docs = [
+    doc("msa", {
+      original_name: "master-services-agreement.pdf",
+      vendor_name: "Atlas Ridge Technologies LLC",
+      customer_name: "Nexus Corp",
+      governing_law: "New York",
+      result_model: "qwen2.5:7b-instruct",
+    }),
+    doc("saas", {
+      original_name: "saas-subscription.pdf",
+      vendor_name: "Société Cloudhaven",
+      customer_name: "Nexus Europe",
+      governing_law: "England and Wales",
+      result_model: "gpt-5-mini",
+    }),
+    // No extraction yet: only the file name is there.
+    doc("queued", { original_name: "Zürich-lease.docx", status: "queued" }),
+  ];
+  const found = (query: string) => ids(filterDocuments(docs, query));
+
+  it("keeps everything for an empty query, as a new list", () => {
+    expect(found("")).toEqual(["msa", "saas", "queued"]);
+    expect(found("   ")).toEqual(["msa", "saas", "queued"]);
+    expect(filterDocuments(docs, "")).not.toBe(docs);
+  });
+
+  it("looks in the vendor", () => {
+    expect(found("atlas")).toEqual(["msa"]);
+  });
+
+  it("looks in the customer", () => {
+    expect(found("nexus")).toEqual(["msa", "saas"]);
+    expect(found("europe")).toEqual(["saas"]);
+  });
+
+  it("looks in the file name, also of a document without an extraction", () => {
+    expect(found("subscription")).toEqual(["saas"]);
+    expect(found("lease")).toEqual(["queued"]);
+    expect(found(".pdf")).toEqual(["msa", "saas"]);
+  });
+
+  it("looks in the governing law", () => {
+    expect(found("wales")).toEqual(["saas"]);
+    expect(found("new york")).toEqual(["msa"]);
+  });
+
+  it("looks in the model, as on the chip and in full", () => {
+    expect(found("qwen2.5:7b")).toEqual(["msa"]);
+    expect(found("7b-instruct")).toEqual(["msa"]);
+    expect(found("gpt")).toEqual(["saas"]);
+  });
+
+  it("does not look in other fields", () => {
+    expect(found("completed")).toEqual([]);
+    expect(found("2026")).toEqual([]);
+  });
+
+  it("ignores case", () => {
+    expect(found("ATLAS ridge")).toEqual(["msa"]);
+  });
+
+  it("ignores accents, in the query and in the document", () => {
+    expect(found("societe")).toEqual(["saas"]);
+    expect(found("Sociéte")).toEqual(["saas"]);
+    expect(found("zurich")).toEqual(["queued"]);
+    expect(found("ZÜRICH")).toEqual(["queued"]);
+  });
+
+  it("wants every word, each in any of the fields", () => {
+    expect(found("nexus york")).toEqual(["msa"]);
+    expect(found("cloudhaven gpt wales")).toEqual(["saas"]);
+    expect(found("atlas wales")).toEqual([]);
+  });
+
+  it("is empty when nothing matches", () => {
+    expect(found("unicorn")).toEqual([]);
+    expect(filterDocuments([], "atlas")).toEqual([]);
+  });
+
+  it("keeps the order it was given, so the sort stays", () => {
+    const sorted = sortDocuments(
+      [
+        doc("later", { vendor_name: "Acme", days_until_notice_deadline: 90 }),
+        doc("other", { vendor_name: "Borealis", days_until_notice_deadline: 5 }),
+        doc("soon", { vendor_name: "Acme", days_until_notice_deadline: 10 }),
+      ],
+      "notice",
+    );
+
+    expect(ids(filterDocuments(sorted, "acme"))).toEqual(["soon", "later"]);
   });
 });

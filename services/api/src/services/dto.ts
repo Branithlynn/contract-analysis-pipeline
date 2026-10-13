@@ -137,6 +137,8 @@ export function toSummary(
     result_model: shown?.model ?? null,
     result_prompt_version: shown?.prompt_version ?? null,
     vendor_name: result?.vendor_name.value ?? null,
+    customer_name: result?.customer_name.value ?? null,
+    governing_law: result?.governing_law.value ?? null,
     total_contract_value: result?.total_contract_value.value ?? null,
     expiration_date: result?.derived.expiration_date ?? null,
     current_term_end: result?.derived.current_term_end ?? null,

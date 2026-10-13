@@ -16,12 +16,14 @@ import {
   getDocument,
   getRetrievalChunk,
   LlmError,
+  searchThreadIndex,
   type Config,
   type ModelSelection,
 } from "@nexus/shared/node";
 import { AskTimeoutError, readThread, runAsk, type AskDeps } from "../ask/agent.js";
 import type { OllamaGate } from "../ask/busy.js";
 import { ASK_PROMPT_VERSION } from "../ask/prompt.js";
+import { titleOf } from "../ask/thread-index.js";
 import { listThreadIds } from "../ask/threads.js";
 import { HttpError } from "../errors.js";
 import { readContext } from "../services/dto.js";
@@ -49,15 +51,12 @@ interface Prepared {
 // and a local model can think for a minute between two steps.
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const MAX_THREADS = 50;
-const TITLE_CHARS = 80;
 
 const ThreadParams = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 const ChunkParams = z.object({ id: z.coerce.number().int().positive() });
 
-function titleOf(question: string): string {
-  const line = question.replace(/\s+/g, " ").trim();
-  return line.length <= TITLE_CHARS ? line : `${line.slice(0, TITLE_CHARS - 1).trimEnd()}…`;
-}
+// q: what the search field over the earlier chats holds.
+const ThreadsQuery = z.object({ q: z.string().trim().max(200).optional() });
 
 export const askRoutes: FastifyPluginCallback<AskRouteDeps> = (app, deps, done) => {
   const { db, config, models, ollamaGate, clock, threads } = deps;
@@ -243,7 +242,28 @@ export const askRoutes: FastifyPluginCallback<AskRouteDeps> = (app, deps, done) 
 
   // The conversations the checkpointer holds, so the chat is still there after a reload.
   app.get("/threads", async (request): Promise<ThreadSummary[]> => {
+    const { q } = ThreadsQuery.parse(request.query);
     const summaries: ThreadSummary[] = [];
+    if (q !== undefined && q !== "") {
+      // Found in the plain text index, newest first. The thread is still read: it has the
+      // contract the chat is about, and a row whose thread is gone is not a chat to open.
+      for (const hit of searchThreadIndex(db, q, MAX_THREADS)) {
+        const thread = await readThread(
+          { db, threads, log: request.log, context: context() },
+          hit.thread_id,
+          false,
+        );
+        if (!thread) continue;
+        summaries.push({
+          thread_id: hit.thread_id,
+          title: hit.title,
+          document_id: thread.document_id,
+          updated_at: hit.updated_at,
+          snippet: hit.snippet,
+        });
+      }
+      return summaries;
+    }
     for (const id of listThreadIds(db, MAX_THREADS)) {
       const thread = await readThread(
         { db, threads, log: request.log, context: context() },

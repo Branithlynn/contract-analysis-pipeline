@@ -10,11 +10,13 @@ import {
   migrate,
   openDb,
 } from "@nexus/shared/node";
+import { backfillThreadIndex } from "./ask/agent.js";
 import { createChatModels } from "./ask/chat-models.js";
 import { createThreadStore, THREAD_TABLES } from "./ask/threads.js";
 import { BullMqJobQueue } from "./queue.js";
 import { startReconciler } from "./reconciler.js";
 import { buildServer } from "./server.js";
+import { readContext } from "./services/dto.js";
 import { createModelCatalog } from "./services/models.js";
 
 const config = loadConfig();
@@ -39,6 +41,14 @@ try {
   // Here and nowhere else, so they exist before the first question and a failure stops the boot.
   const threads = createThreadStore(db);
   logger.info({ tables: THREAD_TABLES }, "thread store ready");
+  // Chats from before the search index over them existed. Nothing to do on later starts.
+  const indexedThreads = await backfillThreadIndex({
+    db,
+    threads,
+    log: logger,
+    context: readContext(new Date(), config.GROUNDING_REVIEW_THRESHOLD),
+  });
+  if (indexedThreads > 0) logger.info({ threads: indexedThreads }, "thread search index filled");
 
   mkdirSync(join(config.UPLOAD_DIR, "tmp"), { recursive: true });
 
