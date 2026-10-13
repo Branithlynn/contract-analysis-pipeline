@@ -22,17 +22,21 @@ import {
 } from "@nexus/shared/node";
 import { AskTimeoutError, readThread, runAsk, type AskDeps } from "../ask/agent.js";
 import type { OllamaGate } from "../ask/busy.js";
-import { ASK_PROMPT_VERSION } from "../ask/prompt.js";
 import { titleOf } from "../ask/thread-index.js";
 import { listThreadIds } from "../ask/threads.js";
 import { HttpError } from "../errors.js";
 import { readContext } from "../services/dto.js";
 import type { ModelCatalog } from "../services/models.js";
 
-export interface AskRouteDeps extends Omit<AskDeps, "maxSteps"> {
+export interface AskRouteDeps extends Omit<AskDeps, "maxSteps" | "promptVersion"> {
   config: Pick<
     Config,
-    "LLM_PROVIDER" | "LLM_MODEL" | "GROUNDING_REVIEW_THRESHOLD" | "ASK_TIMEOUT_MS" | "ASK_MAX_STEPS"
+    | "LLM_PROVIDER"
+    | "LLM_MODEL"
+    | "GROUNDING_REVIEW_THRESHOLD"
+    | "ASK_TIMEOUT_MS"
+    | "ASK_MAX_STEPS"
+    | "ASK_PROMPT_VERSION"
   >;
   models: ModelCatalog;
   ollamaGate: OllamaGate;
@@ -115,11 +119,12 @@ export const askRoutes: FastifyPluginCallback<AskRouteDeps> = (app, deps, done) 
     watch: Watch = {},
   ): Promise<AskResponse> {
     const started = Date.now();
-    const fields = { threadId, ...model, prompt: ASK_PROMPT_VERSION };
+    const fields = { threadId, ...model, prompt: config.ASK_PROMPT_VERSION };
     const timeout = AbortSignal.timeout(config.ASK_TIMEOUT_MS);
     try {
-      const result = await runAsk(
-        { ...deps, maxSteps: config.ASK_MAX_STEPS },
+      // The usage is for the log. The response is what the schema says and no more.
+      const { usage, ...result } = await runAsk(
+        { ...deps, maxSteps: config.ASK_MAX_STEPS, promptVersion: config.ASK_PROMPT_VERSION },
         {
           question: body.question,
           threadId,
@@ -137,6 +142,9 @@ export const askRoutes: FastifyPluginCallback<AskRouteDeps> = (app, deps, done) 
           ...(body.document_id === undefined ? {} : { documentId: body.document_id }),
           stopped: result.stopped,
           steps: result.steps.length,
+          modelCalls: usage.model_calls,
+          inputTokens: usage.tokens?.input ?? null,
+          outputTokens: usage.tokens?.output ?? null,
           citations: result.citations.length,
           unverified: result.citations.filter((c) => c.status !== "verified").length,
           ms: Date.now() - started,

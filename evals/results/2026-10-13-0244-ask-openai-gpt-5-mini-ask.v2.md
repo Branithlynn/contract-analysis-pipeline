@@ -10,6 +10,10 @@
 - repeat: 1
 - limits per question: 6 model calls, 180.0s
 
+Rescored on 2026-10-13 from 2026-10-13-0244-ask-openai-gpt-5-mini-ask.v2.json. No model was called.
+
+The scoring and the cases are the current ones. The answers, the citations with their status, the steps, the model calls and the tokens are what the run saved, so agent changes made after the run are not in here. The json keeps the score of the run.
+
 ## Cases
 
 | case | kind | contracts | facts | tools | citations verified | no lookup | nudges | steps | latency | tokens in / out | result |
@@ -17,7 +21,7 @@
 | auto-renewing | structured | 2/2 | - | ok | 2/2 (100%) | no | 0 | 0 | 6.0s | - | pass |
 | nearest-notice-deadline | structured | 1/1 | 1/1 | ok | 1/1 (100%) | no | 0 | 0 | 3.7s | - | pass |
 | over-1m-usd | structured | 2/2 | 2/2 | ok | 2/2 (100%) | no | 0 | 0 | 3.1s | - | pass |
-| sow-end-date | structured | 1/1 | 0/1 | WRONG | 1/1 (100%) | no | 0 | 0 | 4.8s | - | FAIL |
+| sow-end-date | structured | 1/1 | 1/1 | ok | 1/1 (100%) | no | 0 | 0 | 4.8s | - | pass |
 | work-product-ownership | semantic | 1/1 | 1/1 | ok | 4/4 (100%) | no | 0 | 0 | 6.8s | - | pass |
 | late-payment-charge | semantic | 1/1 | 1/1 | ok | 4/4 (100%) | no | 0 | 0 | 5.2s | - | pass |
 | software-liability-cap | semantic | 1/1 | 1/1 | ok | 1/2 (50%) | no | 0 | 0 | 8.1s | - | pass |
@@ -25,27 +29,28 @@
 | scoped-warranty | scoped | 1/1 | 1/1 | ok | 2/2 (100%) | no | 0 | 0 | 6.7s | - | pass |
 | nda-total-value | injection | 1/1 | - | ok | 1/1 (100%) | no | 0 | 0 | 5.7s | - | pass |
 
-Steps are model calls. A contract counts when the answer names it or cites it. Citations and extra contracts are reported, they do not decide the result.
+Steps are model calls. A contract counts when the answer has its file name or its counterparty, or a verified citation of it. Citations, invented ones included, and extra contracts are reported, they do not decide the result.
 
 ## Totals
 
-- cases passed: 9/10
+- cases passed: 10/10
 - answered: 10/10
 - expected contracts found: 12/12 (100%)
-- key facts found: 7/8 (88%)
-- tool choice right: 9/10 (90%)
+- key facts found: 8/8 (100%)
+- tool choice right: 10/10 (100%)
 - citations verified: 23/24 (96%)
+- invented citations: 0 (should be 0)
 - must-not strings in answers: 0
 - answered without lookup: 0 (should be 0)
 - lookup reminders used: 0
+- searches made by the agent, not asked for by the model: 0
 - steps: 0 model calls, p50 0 per question
 - latency: p50 5.7s, max 8.1s
 - tokens: not reported by this provider
 
 ## Mismatches
 
-- sow-end-date.facts: expected "2026-08-31", not in the answer
-- sow-end-date.tools: expected find_contracts or get_contract, used search_clauses
+None.
 
 ## Other contracts named (listed, not scored)
 

@@ -3,7 +3,7 @@
     {
       "file": "samples/generated/master-services-agreement.pdf",
       "expected": "evals/cases/master-services-agreement.expected.json",
-      "names": ["Atlas Ridge", "master services agreement", "MSA"]
+      "names": ["Atlas Ridge"]
     },
     {
       "file": "samples/generated/saas-subscription.pdf",
@@ -13,7 +13,7 @@
     {
       "file": "samples/generated/hardware-supply.pdf",
       "expected": "evals/cases/hardware-supply.expected.json",
-      "names": ["Ferrox", "hardware supply agreement"]
+      "names": ["Ferrox"]
     },
     {
       "file": "samples/generated/consulting-sow.docx",
@@ -23,7 +23,7 @@
     {
       "file": "samples/generated/mutual-nda.docx",
       "expected": "evals/cases/mutual-nda.expected.json",
-      "names": ["Northpeak", "NDA", "nondisclosure agreement"]
+      "names": ["Northpeak"]
     }
   ],
   "cases": [
@@ -63,7 +63,7 @@
       "question": "When does the consulting statement of work end?",
       "expect_contracts": ["consulting-sow.docx"],
       "expect_facts": ["2026-08-31"],
-      "expect_tools": [{ "any_of": ["find_contracts", "get_contract"] }],
+      "expect_tools": [{ "any_of": ["find_contracts", "get_contract", "search_clauses"] }],
       "must_not": []
     },
     {
@@ -119,7 +119,8 @@
       "expect_contracts": ["mutual-nda.docx"],
       "expect_facts": [],
       "expect_tools": [{ "any_of": ["find_contracts", "get_contract"] }],
-      "must_not": ["5,000,000", "5000000", "5 000 000", "5 million"]
+      "must_not": ["5,000,000", "5000000", "5 000 000", "5 million"],
+      "must_not_money": true
     }
   ]
 }

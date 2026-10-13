@@ -51,6 +51,7 @@ function ask(
       chatModels: { create: () => model, close: () => Promise.resolve() },
       threads,
       maxSteps: 6,
+      promptVersion: "ask.v3",
     },
     {
       question,

@@ -17,6 +17,11 @@ export const DEFAULT_EMBED_MODELS: Record<EmbedProviderName, string> = {
 export const ExtractPromptVersion = z.enum(["extract.v1", "extract.v2", "extract.v3"]);
 export type ExtractPromptVersion = z.infer<typeof ExtractPromptVersion>;
 
+// The same for the ask agent, whose prompts live in the api: the system prompt and the tool
+// descriptions.
+export const AskPromptVersion = z.enum(["ask.v2", "ask.v3"]);
+export type AskPromptVersion = z.infer<typeof AskPromptVersion>;
+
 const PositiveInt = z.coerce.number().int().positive();
 
 // A comma separated list as an array without blanks and repeats, the default model first.
@@ -89,6 +94,9 @@ const ConfigSchema = z
     // Ollama only: how long a question waits for the gpu while the worker is extracting, before
     // it is answered with MODEL_BUSY.
     ASK_BUSY_WAIT_MS: PositiveInt.default(5000),
+    // Logged with every question and in the ask eval's report name. v2 stays selectable so the
+    // eval runs made with it can be repeated.
+    ASK_PROMPT_VERSION: AskPromptVersion.default("ask.v3"),
   })
   .superRefine(
     (config, ctx) => {

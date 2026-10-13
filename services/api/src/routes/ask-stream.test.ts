@@ -275,14 +275,15 @@ describe("POST /api/ask with document_id", () => {
     const { answer, model, db } = await setup({
       script: (messages) => {
         const { toolResults } = currentTurn(messages);
-        // The model names the other contract, and then none at all.
-        if (toolResults.length === 0) {
+        // The first result is the search the agent made before the model was called. The model
+        // then names the other contract, and then none at all.
+        if (toolResults.length === 1) {
           return toolCall("search_clauses", {
             query: "liability limited to fees",
             document_id: MSA,
           });
         }
-        if (toolResults.length === 1) {
+        if (toolResults.length === 2) {
           return toolCall("search_clauses", { query: "liability limited to fees", k: 6 });
         }
         return new AIMessage("Done.");
@@ -292,7 +293,7 @@ describe("POST /api/ask with document_id", () => {
     const body = await answer({ question: "What is the liability cap?", document_id: ORDER });
 
     const results = currentTurn(model?.seen.at(-1) ?? []).toolResults;
-    expect(results).toHaveLength(2);
+    expect(results).toHaveLength(3);
     for (const result of results) {
       expect(result).toContain(`"chunk_id":${String(chunkIdOf(db, ORDER_LIABILITY))}`);
       expect(result).not.toContain(`"chunk_id":${String(chunkIdOf(db, MSA_LIABILITY))}`);
@@ -301,6 +302,78 @@ describe("POST /api/ask with document_id", () => {
     expect(body.steps.map((s) => s.result)).toEqual([
       expect.stringMatching(/from order\.pdf$/),
       expect.stringMatching(/from order\.pdf$/),
+      expect.stringMatching(/from order\.pdf$/),
+    ]);
+  });
+
+  it("searches the contract before the model is first called", async () => {
+    // What the 7b did on a scoped question: no tool call, ever. The answer still has the
+    // contract's passages behind it.
+    const question = "Is liability limited to the fees paid?";
+    const { answer, model, db, lines } = await setup({
+      script: (messages) => {
+        const id = /"chunk_id":(\d+)/.exec(currentTurn(messages).toolResults[0] ?? "")?.[1] ?? "";
+        return new AIMessage(`It is "limited to the fees paid for the hardware" [chunk:${id}].`);
+      },
+    });
+
+    const body = await answer({ question, document_id: ORDER });
+
+    // One call, and it already had the passages. No reminder: the lookup was made.
+    expect(model?.seen).toHaveLength(1);
+    expect(model?.seen[0]?.map((m) => m.getType())).toEqual(["system", "human", "ai", "tool"]);
+    expect(body.steps).toEqual([
+      {
+        tool: "search_clauses",
+        input: { query: question, document_id: ORDER },
+        result: expect.stringMatching(
+          /^searched by the agent, not asked for by the model: \d passages .* from order\.pdf$/,
+        ) as string,
+      },
+    ]);
+    expect(body.citations).toMatchObject([
+      { id: String(chunkIdOf(db, ORDER_LIABILITY)), status: "verified", document_id: ORDER },
+    ]);
+    // The search is not a model call.
+    expect(lines).toContainEqual(
+      expect.objectContaining({ msg: "question answered", modelCalls: 1, steps: 1 }),
+    );
+  });
+
+  it("shows that search as the first steps of the stream", async () => {
+    const { askStream } = await setup({ script: () => new AIMessage("Done.") });
+
+    const events = parseStream(
+      (await askStream({ question: "What is the liability cap?", document_id: ORDER })).payload,
+    );
+
+    expect(events.map((e) => e.event)).toEqual(["started", "step", "step", "done"]);
+    expect(events.slice(1, 3)).toMatchObject([
+      {
+        data: {
+          type: "tool_call",
+          tool: "search_clauses",
+          input: { query: "What is the liability cap?", document_id: ORDER },
+        },
+      },
+      { data: { type: "tool_result", tool: "search_clauses" } },
+    ]);
+  });
+
+  it("keeps that search out of the thread, like any other tool call", async () => {
+    const { answer, model } = await setup({ script: () => new AIMessage("Done.") });
+    const first = await answer({ question: "What is the liability cap?", document_id: ORDER });
+
+    await answer({ question: "And the term?", document_id: ORDER, thread_id: first.thread_id });
+
+    // The follow-up: the first question and its answer, then the new question with its search.
+    expect(model?.seen.at(-1)?.map((m) => m.getType())).toEqual([
+      "system",
+      "human",
+      "ai",
+      "human",
+      "ai",
+      "tool",
     ]);
   });
 

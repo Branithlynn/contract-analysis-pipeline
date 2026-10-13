@@ -1,6 +1,7 @@
 // Turns an ask eval run into the markdown report. Pure, so the layout can be tested without a
 // model. Same style as the extraction report in ../report.ts.
 import type { AskCitation, AskStep } from "@nexus/shared";
+import { CODE_LOOKUP_NOTE } from "../../services/api/src/ask/reminder.js";
 import type { Ratio } from "../score.js";
 import { askPassed, type AskOutcome, type AskScore } from "./ask-score.js";
 
@@ -138,6 +139,9 @@ export function askMismatches(run: AskRun): string[] {
   for (const banned of score.forbidden) {
     lines.push(`${label}.must_not: ${JSON.stringify(banned)} is in the answer`);
   }
+  for (const marker of score.invented_citations) {
+    lines.push(`${label}.citations: ${marker} is invented, no tool returned that id`);
+  }
   if (score.answered_without_lookup) {
     lines.push(`${label}.lookup: answered without calling a tool`);
   }
@@ -192,7 +196,7 @@ export function renderAskReport(input: AskReportInput): string {
       runs.map(caseRow),
     ),
     "",
-    "Steps are model calls. A contract counts when the answer names it or cites it. Citations and extra contracts are reported, they do not decide the result.",
+    "Steps are model calls. A contract counts when the answer has its file name or its counterparty, or a verified citation of it. Citations, invented ones included, and extra contracts are reported, they do not decide the result.",
     "",
     "## Totals",
     "",
@@ -202,9 +206,13 @@ export function renderAskReport(input: AskReportInput): string {
     `- key facts found: ${percent(sum(runs, (s) => s.facts))}`,
     `- tool choice right: ${percent({ correct: toolsOk, total: runs.length })}`,
     `- citations verified: ${percent(sum(runs, (s) => s.citations))}`,
+    `- invented citations: ${String(runs.reduce((n, run) => n + run.score.invented_citations.length, 0))} (should be 0)`,
     `- must-not strings in answers: ${String(runs.reduce((n, run) => n + run.score.forbidden.length, 0))}`,
     `- answered without lookup: ${String(runs.filter((run) => run.score.answered_without_lookup).length)} (should be 0)`,
     `- lookup reminders used: ${String(runs.reduce((n, run) => n + run.score.nudges, 0))}`,
+    // Counted as the tool they ran, so a case can pass its tool check on a search the model
+    // never asked for. This line says how often.
+    `- searches made by the agent, not asked for by the model: ${String(runs.reduce((n, run) => n + run.steps.filter((step) => step.result.startsWith(CODE_LOOKUP_NOTE)).length, 0))}`,
     `- steps: ${String(runs.reduce((n, run) => n + run.model_calls, 0))} model calls, p50 ${String(median(runs.map((run) => run.model_calls)))} per question`,
     `- latency: p50 ${seconds(median(latencies))}, max ${seconds(Math.max(0, ...latencies))}`,
     `- tokens: ${metered.length === 0 ? "not reported by this provider" : `${String(tokens.input)} in, ${String(tokens.output)} out`}`,

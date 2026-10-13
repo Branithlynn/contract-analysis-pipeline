@@ -12,7 +12,14 @@ import {
   seedContracts,
 } from "../test-support/ask.js";
 import { addDays, docId, NOW } from "../test-support/fixtures.js";
-import { createAskTools, summaryOf, TOOL_RESULT_BUDGET_CHARS, wrapToolResult } from "./tools.js";
+import { askPrompt } from "./prompt.js";
+import {
+  createAskTools,
+  prepareToolArgs,
+  summaryOf,
+  TOOL_RESULT_BUDGET_CHARS,
+  wrapToolResult,
+} from "./tools.js";
 
 let db: Db;
 
@@ -30,13 +37,20 @@ function tools(embedder: Embedder = new MockEmbedder()) {
     embedder,
     log: createLogger("api", "silent"),
     context: readContext(NOW, 0.8),
+    descriptions: askPrompt("ask.v3").tools,
   });
-  // What the model gets back, and the json inside the <document> block.
+  // What the model gets back, the json inside the <document> block and what the tool says
+  // after it.
   const call = async (run: Promise<unknown>) => {
     const text = String(await run);
     expect(text.startsWith("<document>\n")).toBe(true);
-    expect(text.endsWith("\n</document>")).toBe(true);
-    return { text, json: JSON.parse(text.slice(11, -12)) as Record<string, unknown> };
+    const end = text.indexOf("\n</document>");
+    expect(end).toBeGreaterThan(0);
+    return {
+      text,
+      json: JSON.parse(text.slice(11, end)) as Record<string, unknown>,
+      note: text.slice(end + 12).trim(),
+    };
   };
   return {
     find: (args: unknown) => call(find.invoke(args as never)),
@@ -105,6 +119,94 @@ describe("find_contracts", () => {
   it("leaves a contract out of a date filter when it has no such date", async () => {
     // The order has no notice period, so no notice deadline in either direction.
     expect(await idsFor({ notice_deadline_after: "2000-01-01" })).toEqual([MSA]);
+  });
+
+  it("says which filters it applied when nothing matches, and that dropping one may help", async () => {
+    const { text, json, note } = await tools().find({
+      auto_renewal: true,
+      governing_law: "Germany",
+      currency: null,
+    });
+
+    expect(json).toMatchObject({ summary: "0 of 2 contracts match", contracts: [] });
+    // After the block: it is the tool speaking, not contract data.
+    expect(note).toBe(
+      "No contract matches all of these filters together: auto_renewal=true, governing_law=Germany. Filters combine with AND, so dropping one may help. Keep only the ones the question asks for and call find_contracts again. Without filters it lists every contract.",
+    );
+    expect(summaryOf(text)).toBe("0 of 2 contracts match");
+  });
+
+  it("adds nothing to a result that has contracts", async () => {
+    expect((await tools().find({})).note).toBe("");
+    expect((await tools().find({ auto_renewal: true })).note).toBe("");
+  });
+});
+
+describe("prepareToolArgs", () => {
+  const message = (tool: string, args: unknown) => {
+    const prepared = prepareToolArgs(tool, args);
+    return prepared.ok ? null : prepared.message;
+  };
+
+  it("passes arguments that are right, as they are", () => {
+    const args = { auto_renewal: true, min_value: 1000000, currency: "USD", risk_category: null };
+
+    expect(prepareToolArgs("find_contracts", args)).toEqual({ ok: true, args });
+    expect(prepareToolArgs("find_contracts", {})).toEqual({ ok: true, args: {} });
+  });
+
+  it("takes text that says a number, true or false, or nothing", () => {
+    expect(
+      prepareToolArgs("find_contracts", {
+        min_value: "1000000",
+        max_value: " 2,500,000.50 ",
+        auto_renewal: "True",
+        needs_review: "false",
+        expires_before: "",
+        governing_law: " ",
+      }),
+    ).toEqual({
+      ok: true,
+      args: {
+        min_value: 1000000,
+        max_value: 2500000.5,
+        auto_renewal: true,
+        needs_review: false,
+        expires_before: null,
+        governing_law: null,
+      },
+    });
+    expect(prepareToolArgs("search_clauses", { query: "notice", k: "3" })).toEqual({
+      ok: true,
+      args: { query: "notice", k: 3 },
+    });
+  });
+
+  it("names the argument, what it takes and what was sent", () => {
+    expect(message("find_contracts", { risk_category: "price_hike" })).toBe(
+      'find_contracts did not run, wrong arguments. risk_category has to be one of auto_renewal, uncapped_liability, broad_indemnification, unilateral_price_increase, termination_for_convenience_vendor_only, exclusivity, ip_assignment, data_protection_gap, penalties_liquidated_damages, unfavorable_payment_terms, foreign_governing_law, other, you sent "price_hike". Fix this and call find_contracts again.',
+    );
+    expect(
+      message("find_contracts", { expires_before: "31 August 2026", min_value: "a lot" }),
+    ).toBe(
+      'find_contracts did not run, wrong arguments. expires_before has to be a date written as YYYY-MM-DD, you sent "31 August 2026". min_value has to be a number like 1000000, you sent "a lot". Fix this and call find_contracts again.',
+    );
+  });
+
+  it("says so when a required argument is missing or empty", () => {
+    expect(message("search_clauses", { k: 3 })).toBe(
+      "search_clauses did not run, wrong arguments. query is required: text of 1 to 500 characters. Fix this and call search_clauses again.",
+    );
+    expect(message("get_contract", { id: "" })).toMatch(
+      /id has to be a contract id from find_contracts, you sent ""\./,
+    );
+  });
+
+  it("leaves a tool it does not know to langchain", () => {
+    expect(prepareToolArgs("delete_contracts", { all: true })).toEqual({
+      ok: true,
+      args: { all: true },
+    });
   });
 });
 

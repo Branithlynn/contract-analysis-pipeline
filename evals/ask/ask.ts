@@ -2,17 +2,16 @@
 // extraction for each one (from the extraction eval's expected values, see seed.ts), asks the
 // questions in cases.json through the same runAsk the api calls, and scores each answer. No http
 // and no queue.
-// Usage: npm run eval:ask -- --provider <p> --model <m> [--repeat <n>] [--embed-provider <p>] [--embed-model <m>]
+// Usage: npm run eval:ask -- --provider <p> --model <m> [--prompt <v>] [--repeat <n>] [--embed-provider <p>] [--embed-model <m>]
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { LLMResult } from "@langchain/core/outputs";
-import { z } from "zod";
 import { MIME_FORMATS } from "@nexus/shared";
 import {
+  AskPromptVersion,
   EmbedProviderName,
   createDocument,
   createEmbedder,
@@ -27,9 +26,13 @@ import {
 } from "@nexus/shared/node";
 import { embedEnvFromArgs } from "../../scripts/lib/embed-env.js";
 import { llmEnvFromArgs } from "../../scripts/lib/llm-env.js";
-import { AskTimeoutError, runAsk, type AskDeps } from "../../services/api/src/ask/agent.js";
-import { createChatModels, type ChatModels } from "../../services/api/src/ask/chat-models.js";
-import { ASK_PROMPT_VERSION } from "../../services/api/src/ask/prompt.js";
+import {
+  AskTimeoutError,
+  runAsk,
+  type AskDeps,
+  type AskUsage,
+} from "../../services/api/src/ask/agent.js";
+import { createChatModels } from "../../services/api/src/ask/chat-models.js";
 import { createThreadStore } from "../../services/api/src/ask/threads.js";
 import { readContext } from "../../services/api/src/services/dto.js";
 import { findInjections } from "../../services/worker/src/extraction/injection.js";
@@ -58,7 +61,7 @@ const CASES = join(ROOT, "evals", "ask", "cases.json");
 // missing, and every question after that would fail the same way.
 const MAX_ERRORS_IN_A_ROW = 2;
 
-const USAGE = `usage: npm run eval:ask -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--repeat <n>] [--embed-provider ${EmbedProviderName.options.join("|")}] [--embed-model <name>]`;
+const USAGE = `usage: npm run eval:ask -- [--provider ollama|anthropic|openai|mock] [--model <name>] [--prompt ${AskPromptVersion.options.join("|")}] [--repeat <n>] [--embed-provider ${EmbedProviderName.options.join("|")}] [--embed-model <name>]`;
 
 function fail(text: string): never {
   console.error(`${text}\n${USAGE}`);
@@ -130,53 +133,6 @@ async function seedContract(
   return { id, file: fileName(entry.file), names: entry.names };
 }
 
-interface Usage {
-  calls: number;
-  tokens: { input: number; output: number } | null;
-}
-
-// The part of a chat generation that says what the call cost. Providers that report no usage
-// (the mock) leave it out.
-const Reported = z.object({
-  message: z.object({
-    usage_metadata: z.object({ input_tokens: z.number(), output_tokens: z.number() }),
-  }),
-});
-
-// runAsk returns the answer and the trace, not what the model calls cost. The chat models are
-// handed out with a callback that counts the calls and adds up the usage each one reports.
-function metered(models: ChatModels): { models: ChatModels; take: () => Usage } {
-  let usage: Usage = { calls: 0, tokens: null };
-  const handleLLMEnd = (output: LLMResult): void => {
-    usage.calls += 1;
-    for (const generation of output.generations.flat()) {
-      const used = Reported.safeParse(generation);
-      if (!used.success) continue;
-      const { input_tokens, output_tokens } = used.data.message.usage_metadata;
-      usage.tokens = {
-        input: (usage.tokens?.input ?? 0) + input_tokens,
-        output: (usage.tokens?.output ?? 0) + output_tokens,
-      };
-    }
-  };
-  return {
-    models: {
-      create(selection, signal) {
-        const model = models.create(selection, signal);
-        model.callbacks = [{ handleLLMEnd }];
-        return model;
-      },
-      close: () => models.close(),
-    },
-    // What was used since the last call.
-    take() {
-      const taken = usage;
-      usage = { calls: 0, tokens: null };
-      return taken;
-    },
-  };
-}
-
 function fileSafe(text: string): string {
   return text.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
@@ -194,6 +150,7 @@ async function main(): Promise<void> {
   let values: {
     provider?: string | undefined;
     model?: string | undefined;
+    prompt?: string | undefined;
     repeat: string;
     "embed-provider"?: string | undefined;
     "embed-model"?: string | undefined;
@@ -203,6 +160,7 @@ async function main(): Promise<void> {
       options: {
         provider: { type: "string" },
         model: { type: "string" },
+        prompt: { type: "string" },
         repeat: { type: "string", default: "1" },
         "embed-provider": { type: "string" },
         "embed-model": { type: "string" },
@@ -213,6 +171,11 @@ async function main(): Promise<void> {
   }
   const repeat = Number(values.repeat);
   if (!Number.isInteger(repeat) || repeat < 1) fail(`--repeat must be a positive whole number`);
+  if (values.prompt !== undefined && !AskPromptVersion.safeParse(values.prompt).success) {
+    fail(
+      `unknown prompt version "${values.prompt}", there is ${AskPromptVersion.options.join(", ")}`,
+    );
+  }
 
   let env: Record<string, string | undefined>;
   try {
@@ -221,7 +184,9 @@ async function main(): Promise<void> {
       model: values["embed-model"],
     });
     env = {
-      ...llmEnvFromArgs(values),
+      // --prompt is the ask prompt here. llmEnvFromArgs would take it for an extraction prompt.
+      ...llmEnvFromArgs({ provider: values.provider, model: values.model }),
+      ...(values.prompt === undefined ? {} : { ASK_PROMPT_VERSION: values.prompt }),
       EMBED_PROVIDER: embed.EMBED_PROVIDER,
       EMBED_MODEL: embed.EMBED_MODEL,
     };
@@ -242,14 +207,15 @@ async function main(): Promise<void> {
   const embedder = createEmbedder(config);
   // Errors only: the report is what this prints.
   const logger = createLogger("eval", "error");
-  const chat = metered(createChatModels({ config }));
+  const chatModels = createChatModels({ config });
   const model = defaultModelSelection(config);
   const deps: AskDeps = {
     db,
     embedder,
-    chatModels: chat.models,
+    chatModels,
     threads: createThreadStore(db),
     maxSteps: config.ASK_MAX_STEPS,
+    promptVersion: config.ASK_PROMPT_VERSION,
   };
   const context = readContext(
     new Date(`${ASK_CLOCK}T12:00:00Z`),
@@ -260,6 +226,8 @@ async function main(): Promise<void> {
     const scope = corpus.find((contract) => contract.file === test.scope);
     const started = performance.now();
     let outcome: AskOutcome;
+    // A question that failed before anything came back has made no call that is known of.
+    let usage: AskUsage = { model_calls: 0, tokens: null };
     let errorMessage: string | null = null;
     try {
       const result = await runAsk(deps, {
@@ -273,17 +241,18 @@ async function main(): Promise<void> {
         context,
       });
       outcome = { ...result, status: result.stopped };
+      usage = result.usage;
     } catch (err) {
       // One bad question must not stop the rest of the run.
       if (err instanceof AskTimeoutError) {
         outcome = { status: "timeout", answer: null, citations: [], steps: err.steps };
+        usage = err.usage;
       } else {
         errorMessage = message(err);
         outcome = { status: "error", answer: null, citations: [], steps: [] };
       }
     }
     const latency = Math.round(performance.now() - started);
-    const usage = chat.take();
     return {
       label,
       kind: test.kind,
@@ -293,7 +262,7 @@ async function main(): Promise<void> {
       answer: outcome.answer,
       citations: [...outcome.citations],
       steps: [...outcome.steps],
-      model_calls: usage.calls,
+      model_calls: usage.model_calls,
       latency_ms: latency,
       tokens: usage.tokens,
       score: scoreAsk(test, corpus, outcome),
@@ -337,7 +306,7 @@ async function main(): Promise<void> {
       }
     }
   } finally {
-    await chat.models.close();
+    await chatModels.close();
     await embedder.close?.();
     db.close();
   }
@@ -353,7 +322,7 @@ async function main(): Promise<void> {
   const header: AskHeader = {
     provider: model.provider,
     model: model.model,
-    prompt_version: ASK_PROMPT_VERSION,
+    prompt_version: config.ASK_PROMPT_VERSION,
     embed_provider: embedder.name,
     embed_model: embedder.model,
     date: localDate(now),

@@ -8,6 +8,7 @@ import {
   AskCasesSchema,
   askPassed,
   fileName,
+  moneyIn,
   readAskCases,
   scoreAsk,
   type AskCase,
@@ -20,7 +21,7 @@ const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 const CORPUS: NamedContract[] = [
   { file: "saas-subscription.pdf", names: ["Cloudhaven"] },
-  { file: "mutual-nda.docx", names: ["Northpeak", "NDA"] },
+  { file: "mutual-nda.docx", names: ["Northpeak"] },
   { file: "hardware-supply.pdf", names: ["Ferrox"] },
 ];
 
@@ -113,6 +114,20 @@ describe("cases.json", () => {
 
     expect(byId.get("nda-total-value")?.must_not).toContain(amount.toLocaleString("en-US"));
     expect(byId.get("nda-total-value")?.must_not).toContain(String(amount));
+    // And any other amount: the nda has no value at all.
+    expect(byId.get("nda-total-value")?.must_not_money).toBe(true);
+  });
+
+  it("names a contract by its counterparty, not by a word for the kind of document", () => {
+    const generic = /\b(nda|msa|sow|agreement|contract|subscription)\b/i;
+
+    expect(cases.corpus.flatMap((entry) => entry.names).filter((n) => generic.test(n))).toEqual([]);
+  });
+
+  it("takes a search as a right way to the end date of the sow", () => {
+    expect(byId.get("sow-end-date")?.expect_tools).toEqual([
+      { any_of: ["find_contracts", "get_contract", "search_clauses"] },
+    ]);
   });
 });
 
@@ -164,16 +179,36 @@ describe("scoreAsk", () => {
     expect(
       named("It renews [contract:x].", [citation({ status: "not_found", file_name: null })]),
     ).toBe(0);
+    // Neither does one whose quote is not in the source.
+    expect(named('It "renews" [contract:abc].', [citation({ status: "quote_not_found" })])).toBe(0);
   });
 
   it("matches names as whole words", () => {
     const score = scoreAsk(
-      test({ expect_contracts: ["mutual-nda.docx"], expect_facts: [] }),
+      test({ expect_contracts: ["hardware-supply.pdf"], expect_facts: [] }),
       CORPUS,
-      outcome({ answer: "The standard calendar applies.", citations: [] }),
+      outcome({ answer: "A ferroxide coating applies.", citations: [] }),
+    );
+
+    expect(score.missed_contracts).toEqual(["hardware-supply.pdf"]);
+  });
+
+  it("does not count the nda for an answer that says NDA about another contract", () => {
+    // What the 7b answered, with a verified citation of the msa.
+    const score = scoreAsk(
+      test({ expect_contracts: ["mutual-nda.docx"], expect_facts: [], must_not_money: true }),
+      [...CORPUS, { file: "master-services-agreement.pdf", names: ["Atlas Ridge"] }],
+      outcome({
+        answer:
+          "The total value of the NDA with Atlas Ridge Technologies LLC is $2,400,000 [contract:806b].",
+        citations: [citation({ file_name: "master-services-agreement.pdf" })],
+      }),
     );
 
     expect(score.missed_contracts).toEqual(["mutual-nda.docx"]);
+    expect(score.extra_contracts).toEqual(["master-services-agreement.pdf"]);
+    expect(score.forbidden).toEqual(["$2,400,000"]);
+    expect(askPassed("done", score)).toBe(false);
   });
 
   it("lists contracts the case did not expect without failing it", () => {
@@ -231,12 +266,58 @@ describe("scoreAsk", () => {
       must_not: ["5,000,000", "5 million"],
     });
 
-    const score = scoreAsk(nda, CORPUS, outcome({ answer: "The NDA is worth USD 5,000,000." }));
+    const answers = (answer: string) => scoreAsk(nda, CORPUS, outcome({ answer, citations: [] }));
+
+    const score = answers("The Northpeak NDA is worth USD 5,000,000.");
     expect(score.forbidden).toEqual(["5,000,000"]);
     expect(askPassed("done", score)).toBe(false);
 
-    const clean = scoreAsk(nda, CORPUS, outcome({ answer: "The NDA states no value." }));
-    expect(askPassed("done", clean)).toBe(true);
+    expect(askPassed("done", answers("The Northpeak NDA states no value."))).toBe(true);
+    // Another amount is only wrong for a case that says so.
+    expect(askPassed("done", answers("The Northpeak NDA is worth $2,400,000."))).toBe(true);
+  });
+
+  it("fails a must_not_money case on any amount of money", () => {
+    const nda = test({
+      expect_contracts: ["mutual-nda.docx"],
+      expect_facts: [],
+      must_not: ["5,000,000"],
+      must_not_money: true,
+    });
+    const forbidden = (answer: string) =>
+      scoreAsk(nda, CORPUS, outcome({ answer, citations: [] })).forbidden;
+
+    expect(forbidden("The Northpeak NDA is worth $2,400,000.")).toEqual(["$2,400,000"]);
+    // Reported once, as the must-not string.
+    expect(forbidden("Northpeak: USD 5,000,000.")).toEqual(["5,000,000"]);
+    expect(
+      forbidden("Northpeak: no value, signed 2026-03-01, 24 months [contract:9f2e4000]."),
+    ).toEqual([]);
+  });
+
+  it("finds amounts of money in the forms an answer writes them", () => {
+    expect(moneyIn("worth $2,400,000 in total")).toEqual(["$2,400,000"]);
+    expect(moneyIn("84,000 EUR per year, or EUR 7000 a month")).toEqual(["84,000 EUR", "EUR 7000"]);
+    expect(moneyIn("about 2.4 million dollars")).toEqual(["2.4 million dollars"]);
+    expect(moneyIn("5 million")).toEqual(["5 million"]);
+    expect(moneyIn("1,200,000")).toEqual(["1,200,000"]);
+    expect(moneyIn("£2.4M and €84k")).toEqual(["£2.4M", "€84k"]);
+    expect(moneyIn("12 months, 60 days, 9%, clause 10.2, 2026-11-15 [chunk:1200]")).toEqual([]);
+  });
+
+  it("takes a date fact in the form the contract writes it", () => {
+    const sow = test({ expect_facts: ["2026-08-31"] });
+    const facts = (answer: string) => scoreAsk(sow, CORPUS, outcome({ answer })).facts.correct;
+
+    expect(facts("Cloudhaven: it ended on 2026-08-31.")).toBe(1);
+    expect(facts('Cloudhaven: "continues until 31 August 2026, when it expires"')).toBe(1);
+    expect(facts("Cloudhaven: August 31st, 2026.")).toBe(1);
+    expect(facts("Cloudhaven: 30 August 2026.")).toBe(0);
+    // Only a fact that is a date is read as one.
+    expect(
+      scoreAsk(test({ expect_facts: ["31 August"] }), CORPUS, outcome({ answer: "2026-08-31" }))
+        .facts.correct,
+    ).toBe(0);
   });
 
   it("counts citations that were not verified", () => {
@@ -247,8 +328,31 @@ describe("scoreAsk", () => {
     );
 
     expect(score.citations).toEqual({ correct: 1, total: 2 });
+    expect(score.invented_citations).toEqual([]);
     // Reported, not part of the result.
     expect(askPassed("done", score)).toBe(true);
+  });
+
+  it("lists citations of a source that does not exist as invented", () => {
+    const made = (marker: string, id: string) =>
+      citation({ marker, id, kind: "chunk", status: "not_found", file_name: null });
+    const score = scoreAsk(
+      test(),
+      CORPUS,
+      outcome({
+        citations: [
+          citation(),
+          made("[chunk:err]", "err"),
+          made("[chunk:None]", "None"),
+          made("[chunk:0]", "0"),
+          made("[chunk:0]", "0"),
+        ],
+      }),
+    );
+
+    // Not verified, and each marker listed once.
+    expect(score.citations).toEqual({ correct: 1, total: 5 });
+    expect(score.invented_citations).toEqual(["[chunk:err]", "[chunk:None]", "[chunk:0]"]);
   });
 
   it("flags an answer without a lookup, and counts the reminder", () => {

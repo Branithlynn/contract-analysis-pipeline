@@ -1,7 +1,8 @@
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it } from "vitest";
 import { ErrorBodySchema } from "@nexus/shared";
-import { isLookupReminder, LOOKUP_REMINDER } from "../ask/reminder.js";
+import { askPrompt } from "../ask/prompt.js";
+import { ANSWER_FROM_RESULTS, isLookupReminder, LOOKUP_REMINDER } from "../ask/reminder.js";
 import { currentTurn, toolCall, type ChatScript } from "../ask/scripted-model.js";
 import type { ModelCatalog } from "../services/models.js";
 import {
@@ -564,14 +565,104 @@ describe("POST /api/ask: no lookup, no answer", () => {
     expect(everythingSeen()).not.toContain(LOOKUP_REMINDER);
   });
 
-  it("accepts a second reply without a tool call: the question may not need one", async () => {
+  // Never asks for a tool. Answers from passages once they are in front of it.
+  const never: ChatScript = (messages) => {
+    const id = /"chunk_id":(\d+)/.exec(currentTurn(messages).toolResults[0] ?? "")?.[1];
+    return new AIMessage(
+      id === undefined ? "Sixty days." : `It takes "60 days written notice" [chunk:${id}].`,
+    );
+  };
+
+  it("searches for the model when its reply to the reminder has no lookup either", async () => {
+    const { answer, model, db, get } = await setup({ script: never });
+    const question = "60 days written notice to terminate";
+
+    const body = await answer({ question });
+
+    expect(body.answer).toMatch(/^It takes "60 days written notice" \[chunk:\d+\]\.$/);
+    expect(body.citations).toMatchObject([
+      { id: String(chunkIdOf(db, TERMINATION)), status: "verified" },
+    ]);
+    // The trace says who made the search.
+    expect(body.steps).toEqual([
+      {
+        tool: "lookup_reminder",
+        input: {},
+        result: "the first reply used no tool, so it was sent back once",
+      },
+      {
+        tool: "search_clauses",
+        input: { query: question },
+        result: expect.stringMatching(
+          /^searched by the agent, not asked for by the model: \d passages for /,
+        ) as string,
+      },
+    ]);
+    expect(model?.seen).toHaveLength(3);
+    // The third call got both of its replies, what it was told, and the search with its result
+    // the way a search of its own would be there.
+    const third = texts(model?.seen[2]).slice(1);
+    expect(third.map(([type]) => type)).toEqual([
+      "human",
+      "ai",
+      "human",
+      "ai",
+      "human",
+      "ai",
+      "tool",
+    ]);
+    expect(third[4]).toEqual(["human", ANSWER_FROM_RESULTS]);
+    expect(ANSWER_FROM_RESULTS).toMatch(/only from these results/);
+    expect(third[6]?.[1]).toContain(TERMINATION);
+
+    // The thread keeps the question and the answer, nothing of what went back and forth.
+    const stored = (await get(`/api/threads/${body.thread_id}`)).json<{
+      messages: { role: string; text: string }[];
+    }>();
+    expect(stored.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("makes that search for a question that needed none, and takes the answer", async () => {
     const { answer, model } = await setup({ script: () => new AIMessage("You are welcome.") });
 
     const body = await answer({ question: "Thanks!" });
 
     expect(body).toMatchObject({ stopped: "done", answer: "You are welcome.", citations: [] });
+    expect(model?.seen).toHaveLength(3);
+    expect(body.steps.map((s) => s.tool)).toEqual(["lookup_reminder", "search_clauses"]);
+  });
+
+  it("takes the reply to the reminder when no call is left to ask again", async () => {
+    const { answer, model } = await setup({ env: { ASK_MAX_STEPS: "2" }, script: never });
+
+    const body = await answer({ question: "60 days written notice to terminate" });
+
+    expect(body).toMatchObject({ stopped: "done", answer: "Sixty days." });
     expect(model?.seen).toHaveLength(2);
     expect(body.steps.map((s) => s.tool)).toEqual(["lookup_reminder"]);
+  });
+
+  it("shows the search it made as steps of the stream", async () => {
+    const { askStream } = await setup({ script: never });
+
+    const events = parseStream(
+      (await askStream({ question: "60 days written notice to terminate" })).payload,
+    );
+
+    expect(events.slice(3, 5)).toMatchObject([
+      { event: "step", data: { type: "tool_call", tool: "search_clauses" } },
+      {
+        event: "step",
+        data: {
+          type: "tool_result",
+          tool: "search_clauses",
+          result: expect.stringMatching(
+            /^searched by the agent, not asked for by the model: /,
+          ) as string,
+        },
+      },
+    ]);
+    expect(events.at(-1)?.event).toBe("done");
   });
 
   it("counts the reply that was sent back as a step", async () => {
@@ -647,7 +738,165 @@ describe("POST /api/ask: no lookup, no answer", () => {
   });
 });
 
+describe("POST /api/ask: a tool call with wrong arguments", () => {
+  const WRAPPED = { auto_renewal: { type: "boolean", value: true } };
+  const MESSAGE =
+    'find_contracts did not run, wrong arguments. auto_renewal has to be true or false, you sent {"type":"boolean","value":true}. Send the value itself, not an object that describes it: {"auto_renewal": ...}. Fix this and call find_contracts again.';
+
+  it("does not run it and tells the model what to fix, so the next call can be right", async () => {
+    // What the 7b sent, and then the call it should have made.
+    const { answer, model } = await setup({
+      script: (messages) => {
+        const { toolResults } = currentTurn(messages);
+        if (toolResults.length === 0) return toolCall("find_contracts", WRAPPED);
+        if (toolResults.length === 1) return toolCall("find_contracts", { auto_renewal: true });
+        return new AIMessage(`Only msa.pdf renews [contract:${MSA}].`);
+      },
+    });
+
+    const body = await answer({ question: "Which contracts auto-renew?" });
+
+    // From the tool, so not in a <document> block, where the model is told to follow nothing.
+    expect(currentTurn(model?.seen[1] ?? []).toolResults).toEqual([MESSAGE]);
+    expect(body.steps).toEqual([
+      // The trace has one line per step, so the start of it.
+      { tool: "find_contracts", input: WRAPPED, result: MESSAGE.slice(0, 200) },
+      { tool: "find_contracts", input: { auto_renewal: true }, result: "1 of 2 contracts match" },
+    ]);
+    expect(body.citations).toMatchObject([{ id: MSA, status: "verified" }]);
+  });
+
+  it("does not take a call that did not run for a lookup", async () => {
+    // Gives up after the message, like the 7b did, and looks it up when it is sent back.
+    const { answer, model } = await setup({
+      script: (messages) => {
+        const { toolResults } = currentTurn(messages);
+        if (toolResults.length === 0) return toolCall("find_contracts", WRAPPED);
+        if (!messages.some(isLookupReminder)) return new AIMessage("No contract renews.");
+        return toolResults.length === 1
+          ? toolCall("find_contracts", { auto_renewal: true })
+          : new AIMessage(`Only msa.pdf renews [contract:${MSA}].`);
+      },
+    });
+
+    const body = await answer({ question: "Which contracts auto-renew?" });
+
+    expect(body.answer).toBe(`Only msa.pdf renews [contract:${MSA}].`);
+    expect(model?.seen).toHaveLength(4);
+    expect(body.steps.map((s) => [s.tool, s.result])).toEqual([
+      ["find_contracts", MESSAGE.slice(0, 200)],
+      ["lookup_reminder", "the first reply used no tool, so it was sent back once"],
+      ["find_contracts", "1 of 2 contracts match"],
+    ]);
+  });
+
+  it("takes a number that was sent as text", async () => {
+    // The 3b's call for "worth more than", with the amounts as strings.
+    const { answer } = await setup({
+      script: (messages) =>
+        currentTurn(messages).toolResults.length === 0
+          ? toolCall("find_contracts", { min_value: "100000", currency: "" })
+          : new AIMessage(`msa.pdf [contract:${MSA}].`),
+    });
+
+    const body = await answer({ question: "Which contracts are worth more than 100000?" });
+
+    expect(body.steps).toEqual([
+      {
+        tool: "find_contracts",
+        input: { min_value: "100000", currency: "" },
+        result: "1 of 2 contracts match",
+      },
+    ]);
+  });
+});
+
+describe("POST /api/ask: what a question cost", () => {
+  it("logs the model calls and the tokens, read from the messages, and keeps them out of the response", async () => {
+    // What a provider puts on the message it returns.
+    const used = (message: AIMessage, input_tokens: number, output_tokens: number) =>
+      Object.assign(message, {
+        usage_metadata: { input_tokens, output_tokens, total_tokens: input_tokens + output_tokens },
+      });
+    const { ask, lines } = await setup({
+      script: (messages) =>
+        currentTurn(messages).toolResults.length === 0
+          ? used(toolCall("find_contracts", {}), 100, 5)
+          : used(new AIMessage("Two."), 300, 7),
+    });
+
+    const res = await ask({ question: "How many contracts are there?" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).not.toHaveProperty("usage");
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        msg: "question answered",
+        prompt: "ask.v3",
+        steps: 1,
+        modelCalls: 2,
+        inputTokens: 400,
+        outputTokens: 12,
+      }),
+    );
+  });
+
+  it("counts the calls of a question that ran into the step limit", async () => {
+    const { answer, lines } = await setup({
+      env: { ASK_MAX_STEPS: "2" },
+      script: () => toolCall("find_contracts", {}),
+    });
+
+    const body = await answer({ question: "How many contracts are there?" });
+
+    expect(body.stopped).toBe("step_limit");
+    expect(lines).toContainEqual(
+      expect.objectContaining({ msg: "question answered", stopped: "step_limit", modelCalls: 2 }),
+    );
+  });
+
+  it("logs no tokens for a model that reports none", async () => {
+    const { answer, lines } = await setup();
+
+    await answer({ question: "60 days written notice to terminate" });
+
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        msg: "question answered",
+        modelCalls: 2,
+        inputTokens: null,
+        outputTokens: null,
+      }),
+    );
+  });
+});
+
 describe("POST /api/ask: the prompt", () => {
+  it("is ask.v3 unless ASK_PROMPT_VERSION says ask.v2", async () => {
+    const script = () => new AIMessage("Done.");
+    const system = async (env: Record<string, string>) => {
+      const { answer, model, lines } = await setup({ env, script });
+      await answer({ question: "Anything", document_id: ORDER });
+      return { text: model?.seen[0]?.[0]?.text ?? "", lines };
+    };
+
+    const v3 = await system({});
+    expect(v3.text).toContain("Never write a tool call as text in your answer.");
+    expect(v3.text).toContain(
+      "A first search of this contract with the user's question has already run",
+    );
+    expect(v3.lines).toContainEqual(
+      expect.objectContaining({ msg: "question answered", prompt: "ask.v3" }),
+    );
+
+    const v2 = await system({ ASK_PROMPT_VERSION: "ask.v2" });
+    expect(v2.text).toBe(askPrompt("ask.v2").system("2026-06-01", ORDER));
+    expect(v2.text).not.toContain("Never write a tool call as text");
+    expect(v2.lines).toContainEqual(
+      expect.objectContaining({ msg: "question answered", prompt: "ask.v2" }),
+    );
+  });
+
   it("asks for the value in the sentence and the citation after it", async () => {
     const { answer, model } = await setup({ script: () => new AIMessage("Done.") });
 

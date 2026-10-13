@@ -2,7 +2,7 @@
 // from the right tool, and keep out what must not be in it. Pure, the runner in ask.ts does the io.
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import type { AskCitation, AskStep } from "@nexus/shared";
+import { dateAppearsIn, type AskCitation, type AskStep } from "@nexus/shared";
 import { LOOKUP_REMINDER_STEP } from "../../services/api/src/ask/reminder.js";
 import { sameText, type Ratio } from "../score.js";
 
@@ -19,7 +19,9 @@ const CorpusEntry = z.strictObject({
   // for it, whose values become the stored extraction.
   file: z.string().min(1),
   expected: z.string().min(1),
-  // How an answer may name this contract besides its file name: the vendor, mostly.
+  // How an answer may name this contract besides its file name: the counterparty. Not a word for
+  // the kind of document: the 7b said "the NDA" about the msa and its value, and "NDA" in this
+  // list counted that as naming the nda.
   names: z.array(z.string().min(1)),
 });
 
@@ -37,6 +39,9 @@ const AskCaseSchema = z.strictObject({
   expect_tools: z.array(OneOf),
   // Text the answer must not contain.
   must_not: z.array(z.string().min(1)),
+  // The right answer is that there is no value, so any amount of money in the answer is wrong,
+  // not only the one a must_not string spells out.
+  must_not_money: z.boolean().optional(),
 });
 export type AskCase = z.infer<typeof AskCaseSchema>;
 
@@ -115,7 +120,10 @@ export interface AskScore {
   tools_used: string[];
   // Verified citations out of all citations in the answer.
   citations: Ratio;
-  // The must-not strings that are in the answer.
+  // Markers whose source does not exist, like [chunk:err] or [chunk:0]: an id no tool returned.
+  // They are in the total above as not verified.
+  invented_citations: string[];
+  // The must-not strings that are in the answer, and for a must_not_money case every amount.
   forbidden: string[];
   // An answer that no tool call stands behind.
   answered_without_lookup: boolean;
@@ -135,15 +143,54 @@ function label(want: OneOf): string {
   return options(want).join(" or ");
 }
 
-// By its file name, by one of its other names, or by a citation that resolved to it. Names are
-// matched as whole words, so "NDA" is not found in "standard".
+// By its file name, by its counterparty, or by a verified citation that belongs to it. A citation
+// with a quote that is not in the source does not count: it shows that the id was copied, not
+// that the answer is about that contract. Names are matched as whole words.
 function namesContract(
   contract: NamedContract,
   answer: string,
   citations: readonly AskCitation[],
 ): boolean {
-  if (citations.some((citation) => citation.file_name === contract.file)) return true;
-  return [contract.file, ...contract.names].some((name) => sameText(name, answer));
+  const cited = citations.some(
+    (citation) => citation.status === "verified" && citation.file_name === contract.file,
+  );
+  return cited || [contract.file, ...contract.names].some((name) => sameText(name, answer));
+}
+
+const IsoDate = z.iso.date();
+
+// A fact written as YYYY-MM-DD is a date, and an answer that quotes the contract has it the way
+// the contract writes it: "31 August 2026". The same matcher the stated-date rule uses.
+function hasFact(option: string, answer: string, text: string): boolean {
+  if (text.includes(flat(option))) return true;
+  return IsoDate.safeParse(option).success && dateAppearsIn(option, answer);
+}
+
+const CITATION = /\[(?:chunk|contract):[^\]]*\]/gi;
+const NUMBER = String.raw`\d(?:[\d.,]*\d)?`;
+const SCALE = String.raw`(?:\s?(?:million|billion|thousand|mn|bn|[mk])\b)?`;
+const CURRENCY = "(?:USD|EUR|GBP|CHF|JPY|CAD|AUD|dollars?|euros?|pounds?)";
+// One pattern, so "USD 2,400,000" is one amount and not also the bare number in it.
+const MONEY = new RegExp(
+  [
+    // $2,400,000 and € 84.000
+    String.raw`[$€£]\s?${NUMBER}${SCALE}`,
+    // USD 5,000,000
+    String.raw`\b${CURRENCY}\s?${NUMBER}${SCALE}`,
+    // 84,000 EUR and 2.4 million dollars
+    String.raw`\b${NUMBER}${SCALE}\s?${CURRENCY}\b`,
+    // 5 million
+    String.raw`\b${NUMBER}\s?(?:million|billion)\b`,
+    // 2,400,000 without a currency
+    String.raw`\b\d{1,3}(?:,\d{3})+\b`,
+  ].join("|"),
+  "gi",
+);
+
+// Every amount of money an answer states. The ids in citation markers are not part of the answer.
+export function moneyIn(answer: string): string[] {
+  const text = answer.replace(CITATION, " ");
+  return [...new Set([...text.matchAll(MONEY)].map((m) => m[0].trim()))];
 }
 
 export function scoreAsk(
@@ -161,7 +208,7 @@ export function scoreAsk(
 
   // Not whole words like the names: the "%" in "9%" is part of the fact.
   const missedFacts = test.expect_facts
-    .filter((fact) => !options(fact).some((option) => text.includes(flat(option))))
+    .filter((fact) => !options(fact).some((option) => hasFact(option, answer, text)))
     .map(label);
 
   // A call the step limit cut off did not run.
@@ -172,6 +219,12 @@ export function scoreAsk(
   const missedTools = test.expect_tools
     .filter((tool) => !options(tool).some((option) => toolsUsed.includes(option)))
     .map(label);
+
+  const banned = test.must_not.filter((string) => text.includes(flat(string)));
+  // An amount a must-not string already reports is not listed a second time.
+  const amounts = (test.must_not_money === true ? moneyIn(answer) : []).filter(
+    (amount) => !banned.some((string) => flat(amount).includes(flat(string))),
+  );
 
   return {
     contracts: {
@@ -192,14 +245,21 @@ export function scoreAsk(
       correct: outcome.citations.filter((citation) => citation.status === "verified").length,
       total: outcome.citations.length,
     },
-    forbidden: test.must_not.filter((banned) => text.includes(flat(banned))),
+    invented_citations: [
+      ...new Set(
+        outcome.citations
+          .filter((citation) => citation.status === "not_found")
+          .map((citation) => citation.marker),
+      ),
+    ],
+    forbidden: [...banned, ...amounts],
     answered_without_lookup: outcome.status === "done" && ran.length === 0,
     nudges: outcome.steps.filter((step) => step.tool === LOOKUP_REMINDER_STEP.tool).length,
   };
 }
 
 // A case passes when there is an answer and nothing that is scored is off. Citations are reported
-// as a rate and extra contracts are listed, neither counts here.
+// as a rate, invented ones and extra contracts are listed, none of them counts here.
 export function askPassed(status: AskOutcome["status"], score: AskScore): boolean {
   return (
     status === "done" &&

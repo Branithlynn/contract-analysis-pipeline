@@ -19,6 +19,7 @@ import {
   type Embedder,
 } from "@nexus/shared/node";
 import { readStoredResult, type ReadContext } from "../services/dto.js";
+import type { AskToolDescriptions } from "./prompt.js";
 
 // The three things the agent can do. All of them only read, and all of them answer from what the
 // pipeline already stored: the extractions with their dates computed in code, and the search index.
@@ -32,6 +33,8 @@ export interface AskToolDeps {
   // The chat was opened from this contract. Every search is limited to it, whatever the model
   // passes: on a long register a short contract's clause would otherwise not show up.
   documentId?: string | undefined;
+  // What the model reads about each tool. They belong to the prompt version.
+  descriptions: AskToolDescriptions;
 }
 
 // One short text, the same limit GET /api/search uses.
@@ -39,6 +42,7 @@ const QUERY_EMBED_TIMEOUT_MS = 30_000;
 const MAX_CONTRACTS = 20;
 const DEFAULT_K = 4;
 const MAX_K = 6;
+export const MAX_QUERY_CHARS = 500;
 // What the tools of one question may return in total, about 6k tokens. A local model has a small
 // context and ollama drops the start of a prompt that does not fit, without an error. A tool that
 // is called after the budget is used up says so instead of returning text.
@@ -49,21 +53,25 @@ const SEVERITY_RANK: Record<Severity, number> = { low: 1, medium: 2, high: 3 };
 // Everything a tool returns is data from documents, so it goes to the model inside a <document>
 // block, which the system prompt declares untrusted. A closing tag in the data would end the
 // block early.
-export function wrapToolResult(payload: unknown): string {
+// note: what the tool itself has to say to the model about the result. It comes after the block,
+// because the system prompt tells the model not to act on anything inside it.
+export function wrapToolResult(payload: unknown, note?: string): string {
   const json = JSON.stringify(payload).replace(/<(\/?)document/gi, "<$1 document");
-  return `<document>\n${json}\n</document>`;
+  const block = `<document>\n${json}\n</document>`;
+  return note === undefined ? block : `${block}\n${note}`;
 }
 
 const Summarized = z.object({ summary: z.string() });
+// The data cannot hold a closing tag, so the first one ends the block.
+const BLOCK = /^<document>\n([\s\S]*?)\n<\/document>/;
 
 // The one line the trace shows for a tool result.
 export function summaryOf(toolResult: string): string {
-  const json = toolResult.replace(/^<document>\n/, "").replace(/\n<\/document>$/, "");
   try {
-    const parsed = Summarized.safeParse(JSON.parse(json));
+    const parsed = Summarized.safeParse(JSON.parse(BLOCK.exec(toolResult)?.[1] ?? ""));
     if (parsed.success) return parsed.data.summary;
   } catch {
-    // Not one of ours (the agent's own message for a tool call it could not run).
+    // Not one of ours: a call that did not run, see prepareToolArgs.
   }
   return toolResult.slice(0, 200);
 }
@@ -92,6 +100,112 @@ const Filters = z.object({
   needs_review: z.boolean().nullish().describe("true: only contracts flagged for human review"),
 });
 type Filters = z.infer<typeof Filters>;
+
+const SearchArgs = z.object({
+  query: z.string().min(1).max(MAX_QUERY_CHARS).describe("contract wording to look for"),
+  k: z
+    .number()
+    .int()
+    .nullish()
+    .describe(`how many passages, 1 to ${String(MAX_K)}, default ${String(DEFAULT_K)}`),
+  document_id: z.string().nullish().describe("only search this contract"),
+});
+
+const ContractArgs = z.object({
+  id: z.string().min(1).describe("contract id from find_contracts"),
+});
+
+const ARGS: Record<string, z.ZodObject> = {
+  find_contracts: Filters,
+  search_clauses: SearchArgs,
+  get_contract: ContractArgs,
+};
+
+const DATE = "a date written as YYYY-MM-DD";
+const TRUE_OR_FALSE = "true or false";
+// What each argument takes, in the words of the message a model gets for a wrong one.
+const ALLOWED: Record<string, string> = {
+  auto_renewal: TRUE_OR_FALSE,
+  needs_review: TRUE_OR_FALSE,
+  notice_deadline_before: DATE,
+  notice_deadline_after: DATE,
+  expires_before: DATE,
+  expires_after: DATE,
+  min_value: "a number like 1000000",
+  max_value: "a number like 1000000",
+  currency: "an ISO code like USD",
+  governing_law: "text like England",
+  risk_category: `one of ${RiskCategory.options.join(", ")}`,
+  query: `text of 1 to ${String(MAX_QUERY_CHARS)} characters`,
+  k: `a whole number from 1 to ${String(MAX_K)}`,
+  document_id: "a contract id from find_contracts",
+  id: "a contract id from find_contracts",
+};
+
+const NUMBERS = new Set(["min_value", "max_value", "k"]);
+const BOOLEANS = new Set(["auto_renewal", "needs_review"]);
+
+// Values a small model sends that say what it means in the wrong type: "1000000" for a number,
+// "true" for a boolean, "" for a filter it does not use. The schema the model is shown stays
+// strict, these are taken as what they mean.
+function lenient(key: string, value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (text === "" && key !== "query" && key !== "id") return null;
+  const digits = text.replaceAll(",", "");
+  if (NUMBERS.has(key) && /^\d+(\.\d+)?$/.test(digits)) return Number(digits);
+  if (BOOLEANS.has(key) && /^(true|false)$/i.test(text)) return text.toLowerCase() === "true";
+  return value;
+}
+
+export type PreparedArgs =
+  | { ok: true; args: Record<string, unknown> }
+  // message: what the model gets instead of a result.
+  | { ok: false; message: string };
+
+// Checks the arguments of a tool call before the tool runs. langchain would do it too, and answer
+// a wrong one with the zod error and the stack of where it was thrown. The 7b read that for
+// {"auto_renewal": {"type": "boolean", "value": true}} and answered that no contract renews. So
+// the message is written here: which argument, what it takes, what was sent. Short enough that
+// the model fixes the call and tries again within the step limit.
+// Not inside a <document> block: it is from the tool, not from a contract, and the model is
+// meant to act on it.
+export function prepareToolArgs(tool: string, raw: unknown): PreparedArgs {
+  const given: Record<string, unknown> =
+    typeof raw === "object" && raw !== null && !Array.isArray(raw) ? { ...raw } : {};
+  const schema = ARGS[tool];
+  // Not one of ours. langchain tells the model which tools there are.
+  if (schema === undefined) return { ok: true, args: given };
+  const args = Object.fromEntries(
+    Object.entries(given).map(([key, value]) => [key, lenient(key, value)]),
+  );
+  const parsed = schema.safeParse(args);
+  if (parsed.success) return { ok: true, args };
+
+  const wrong = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "")))];
+  const problems = wrong.map((key) => {
+    const allowed = ALLOWED[key];
+    if (allowed === undefined) return "The arguments have to be one json object.";
+    const sent = args[key];
+    if (sent === undefined) return `${key} is required: ${allowed}.`;
+    const nested =
+      typeof sent === "object" && sent !== null
+        ? ` Send the value itself, not an object that describes it: {"${key}": ...}.`
+        : "";
+    return `${key} has to be ${allowed}, you sent ${JSON.stringify(sent).slice(0, 80)}.${nested}`;
+  });
+  return {
+    ok: false,
+    message: `${tool} did not run, wrong arguments. ${problems.join(" ")} Fix this and call ${tool} again.`,
+  };
+}
+
+// The filters a call set, as "key=value", for the reply to a search that matched nothing.
+function applied(f: Filters): string[] {
+  return Object.entries(f)
+    .filter(([, value]) => value != null && value !== "")
+    .map(([key, value]) => `${key}=${String(value)}`);
+}
 
 export interface ContractRow {
   id: string;
@@ -256,14 +370,14 @@ export function createAskTools(deps: AskToolDeps) {
   const { db, embedder, log, context } = deps;
   let budgetLeft = TOOL_RESULT_BUDGET_CHARS;
 
-  function reply(payload: { summary: string } & Record<string, unknown>): string {
+  function reply(payload: { summary: string } & Record<string, unknown>, note?: string): string {
     if (budgetLeft <= 0) {
       return wrapToolResult({
         summary: "not run, the tools have returned as much as fits",
         error: "No more tool results fit. Answer from what you already have.",
       });
     }
-    const text = wrapToolResult(payload);
+    const text = wrapToolResult(payload, note);
     budgetLeft -= text.length;
     return text;
   }
@@ -290,29 +404,27 @@ export function createAskTools(deps: AskToolDeps) {
     (filters) => {
       const all = contracts();
       const found = all.filter((row) => matches(row, filters)).sort(byNoticeDeadline);
-      return reply({
-        summary: `${String(found.length)} of ${String(all.length)} contracts match`,
-        // First, so it is read before the rows.
-        nearest_notice_deadline: nearestNoticeDeadline(found),
-        sorted_by: "notice_deadline, soonest first, contracts without one last",
-        total_matching: found.length,
-        // The model has to know when it is not looking at all of them.
-        shown: Math.min(found.length, MAX_CONTRACTS),
-        contracts: found.slice(0, MAX_CONTRACTS).map(keyFields),
-      });
+      const set = applied(filters);
+      // Small models add filters the question never asked for and take "0 match" as the answer.
+      const note =
+        found.length === 0 && set.length > 0 && all.length > 0
+          ? `No contract matches all of these filters together: ${set.join(", ")}. Filters combine with AND, so dropping one may help. Keep only the ones the question asks for and call find_contracts again. Without filters it lists every contract.`
+          : undefined;
+      return reply(
+        {
+          summary: `${String(found.length)} of ${String(all.length)} contracts match`,
+          // First, so it is read before the rows.
+          nearest_notice_deadline: nearestNoticeDeadline(found),
+          sorted_by: "notice_deadline, soonest first, contracts without one last",
+          total_matching: found.length,
+          // The model has to know when it is not looking at all of them.
+          shown: Math.min(found.length, MAX_CONTRACTS),
+          contracts: found.slice(0, MAX_CONTRACTS).map(keyFields),
+        },
+        note,
+      );
     },
-    {
-      name: "find_contracts",
-      description:
-        "List contracts by their extracted fields and dates. Use it for questions about which or " +
-        "how many contracts match a condition: renewal, notice deadlines, expiry, value, governing " +
-        "law, risk categories, review status. All filters are optional and combine with AND; no " +
-        "filters lists every contract. The result is sorted by notice deadline, soonest first, " +
-        "and names the nearest one at the top. The dates and day counts are computed in code, " +
-        "do not recompute or re-sort them. " +
-        "Cite a value from the result as [contract:<id>].",
-      schema: Filters,
-    },
+    { name: "find_contracts", description: deps.descriptions.find_contracts, schema: Filters },
   );
 
   const searchClauses = tool(
@@ -358,27 +470,7 @@ export function createAskTools(deps: AskToolDeps) {
         results: hits.map(hitFields),
       });
     },
-    {
-      name: "search_clauses",
-      description:
-        "Search the text of the contracts and get the passages that match best. Use it for what a " +
-        "contract actually says. Do not pass the user's question as it is: rewrite it into the " +
-        "words a contract would use, e.g. 'most the vendor can be made to pay' becomes 'liability " +
-        "limited to fees', 'can they raise prices' becomes 'fees may be increased upon notice'. " +
-        "When the question is about one contract, pass its id as document_id (get it from " +
-        "find_contracts): a search over all contracts is dominated by the longest one and a short " +
-        "contract's clause may not show up. Cite a passage as [chunk:<chunk_id>], and put words " +
-        "copied from it in double quotes.",
-      schema: z.object({
-        query: z.string().min(1).max(500).describe("contract wording to look for"),
-        k: z
-          .number()
-          .int()
-          .nullish()
-          .describe(`how many passages, 1 to ${String(MAX_K)}, default ${String(DEFAULT_K)}`),
-        document_id: z.string().nullish().describe("only search this contract"),
-      }),
-    },
+    { name: "search_clauses", description: deps.descriptions.search_clauses, schema: SearchArgs },
   );
 
   const getContract = tool(
@@ -395,14 +487,7 @@ export function createAskTools(deps: AskToolDeps) {
         contract: contractDetail(row),
       });
     },
-    {
-      name: "get_contract",
-      description:
-        "Everything that was extracted from one contract: all fields with their confidence, the " +
-        "risk clauses with quotes, the dates computed from them (expiry, renewal, notice " +
-        "deadline) and the alerts. Cite a value from it as [contract:<id>].",
-      schema: z.object({ id: z.string().min(1).describe("contract id from find_contracts") }),
-    },
+    { name: "get_contract", description: deps.descriptions.get_contract, schema: ContractArgs },
   );
 
   // A tuple, so a caller that takes one of them out gets that tool's own type.

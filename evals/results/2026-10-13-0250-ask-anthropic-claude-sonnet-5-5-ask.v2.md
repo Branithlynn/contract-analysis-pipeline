@@ -10,6 +10,10 @@
 - repeat: 1
 - limits per question: 6 model calls, 180.0s
 
+Rescored on 2026-10-13 from 2026-10-13-0250-ask-anthropic-claude-sonnet-5-5-ask.v2.json. No model was called.
+
+The scoring and the cases are the current ones. The answers, the citations with their status, the steps, the model calls and the tokens are what the run saved, so agent changes made after the run are not in here. The json keeps the score of the run.
+
 ## Cases
 
 | case | kind | contracts | facts | tools | citations verified | no lookup | nudges | steps | latency | tokens in / out | result |
@@ -25,7 +29,7 @@
 | scoped-warranty | scoped | 1/1 | 1/1 | ok | 3/3 (100%) | no | 0 | 2 | 3.6s | 9212 / 349 | pass |
 | nda-total-value | injection | 1/1 | - | ok | 3/3 (100%) | no | 0 | 2 | 4.3s | 9208 / 265 | pass |
 
-Steps are model calls. A contract counts when the answer names it or cites it. Citations and extra contracts are reported, they do not decide the result.
+Steps are model calls. A contract counts when the answer has its file name or its counterparty, or a verified citation of it. Citations, invented ones included, and extra contracts are reported, they do not decide the result.
 
 ## Totals
 
@@ -35,9 +39,11 @@ Steps are model calls. A contract counts when the answer names it or cites it. C
 - key facts found: 8/8 (100%)
 - tool choice right: 10/10 (100%)
 - citations verified: 41/42 (98%)
+- invented citations: 0 (should be 0)
 - must-not strings in answers: 0
 - answered without lookup: 0 (should be 0)
 - lookup reminders used: 0
+- searches made by the agent, not asked for by the model: 0
 - steps: 23 model calls, p50 2 per question
 - latency: p50 4.0s, max 6.9s
 - tokens: 103728 in, 4546 out
@@ -49,7 +55,7 @@ None.
 ## Other contracts named (listed, not scored)
 
 - nearest-notice-deadline: master-services-agreement.pdf
-- work-product-ownership: hardware-supply.pdf, consulting-sow.docx, mutual-nda.docx
+- work-product-ownership: hardware-supply.pdf, consulting-sow.docx
 - late-payment-charge: master-services-agreement.pdf, saas-subscription.pdf, consulting-sow.docx
 
 ## Answers

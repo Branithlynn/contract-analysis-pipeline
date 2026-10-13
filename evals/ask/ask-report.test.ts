@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CODE_LOOKUP_NOTE } from "../../services/api/src/ask/reminder.js";
 import { renderAskReport, type AskHeader, type AskRun } from "./ask-report.js";
 import type { AskScore } from "./ask-score.js";
 
@@ -27,6 +28,7 @@ function score(overrides: Partial<AskScore> = {}): AskScore {
     missed_tools: [],
     tools_used: ["find_contracts"],
     citations: { correct: 2, total: 2 },
+    invented_citations: [],
     forbidden: [],
     answered_without_lookup: false,
     nudges: 0,
@@ -91,8 +93,10 @@ describe("renderAskReport", () => {
     expect(report).toContain("- key facts found: 1/2 (50%)");
     expect(report).toContain("- tool choice right: 2/2 (100%)");
     expect(report).toContain("- citations verified: 3/4 (75%)");
+    expect(report).toContain("- invented citations: 0 (should be 0)");
     expect(report).toContain("- answered without lookup: 0 (should be 0)");
     expect(report).toContain("- lookup reminders used: 1");
+    expect(report).toContain("- searches made by the agent, not asked for by the model: 0");
     expect(report).toContain("- steps: 5 model calls, p50 2 per question");
     expect(report).toContain("- latency: p50 4.2s, max 9.0s");
     expect(report).toContain("- tokens: 6800 in, 180 out");
@@ -115,6 +119,7 @@ describe("renderAskReport", () => {
             missed_tools: ["find_contracts or get_contract"],
             tools_used: [],
             forbidden: ["5,000,000"],
+            invented_citations: ["[chunk:err]", "[chunk:0]"],
             answered_without_lookup: true,
             nudges: 1,
           }),
@@ -132,6 +137,13 @@ describe("renderAskReport", () => {
     );
     expect(report).toContain('- nda-total-value.must_not: "5,000,000" is in the answer');
     expect(report).toContain("- nda-total-value.lookup: answered without calling a tool");
+    expect(report).toContain(
+      "- nda-total-value.citations: [chunk:err] is invented, no tool returned that id",
+    );
+    expect(report).toContain(
+      "- nda-total-value.citations: [chunk:0] is invented, no tool returned that id",
+    );
+    expect(report).toContain("- invented citations: 2 (should be 0)");
     expect(report).toContain("- must-not strings in answers: 1");
     expect(report).toContain("- answered without lookup: 1 (should be 0)");
     expect(report).toContain("- nda-total-value (no tool): Notice for");
@@ -182,6 +194,23 @@ describe("renderAskReport", () => {
 
     expect(report).toContain("## Mismatches\n\nNone.");
     expect(report).toContain("## Other contracts named (listed, not scored)\n\nNone.");
+  });
+
+  it("counts the searches the agent made itself", () => {
+    const search = (result: string) => ({ tool: "search_clauses", input: { query: "q" }, result });
+    const report = renderAskReport({
+      header: HEADER,
+      runs: [
+        run({
+          steps: [
+            search(`${CODE_LOOKUP_NOTE}4 passages for "q" from hardware-supply.pdf`),
+            search('4 passages for "q" from hardware-supply.pdf'),
+          ],
+        }),
+      ],
+    });
+
+    expect(report).toContain("- searches made by the agent, not asked for by the model: 1");
   });
 
   it("lists contracts an answer named on top of the expected ones", () => {

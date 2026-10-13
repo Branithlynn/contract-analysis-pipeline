@@ -15,6 +15,7 @@ import {
 import {
   getRetrievalChunk,
   listIndexedThreadIds,
+  type AskPromptVersion,
   type Db,
   type Embedder,
   type ModelSelection,
@@ -22,11 +23,27 @@ import {
 import type { ReadContext } from "../services/dto.js";
 import type { ChatModels } from "./chat-models.js";
 import { verifyCitations, type CitationSources } from "./citations.js";
-import { buildAskSystemPrompt } from "./prompt.js";
-import { isLookupReminder, lookupReminder, LOOKUP_REMINDER_STEP } from "./reminder.js";
+import { askPrompt } from "./prompt.js";
+import {
+  answerFromResults,
+  CODE_LOOKUP_NOTE,
+  codeLookupMessages,
+  isAgentNote,
+  isCodeLookup,
+  isCodeLookupId,
+  isLookupReminder,
+  lookupReminder,
+  LOOKUP_REMINDER_STEP,
+} from "./reminder.js";
 import { writeThreadIndex } from "./thread-index.js";
 import { listThreadIds } from "./threads.js";
-import { createAskTools, loadContract, summaryOf } from "./tools.js";
+import {
+  createAskTools,
+  loadContract,
+  MAX_QUERY_CHARS,
+  prepareToolArgs,
+  summaryOf,
+} from "./tools.js";
 
 export interface AskDeps {
   db: Db;
@@ -36,6 +53,7 @@ export interface AskDeps {
   threads: BaseCheckpointSaver;
   // Model calls per question.
   maxSteps: number;
+  promptVersion: AskPromptVersion;
 }
 
 export interface AskInput {
@@ -52,16 +70,31 @@ export interface AskInput {
   onProgress?: ((progress: AskProgress) => void) | undefined;
 }
 
+// What a question cost. Read from the messages of the question, not from callbacks on the model:
+// a callback set on a ChatOpenAI is gone once tools are bound, because bindTools builds a new
+// model from the constructor arguments. The first ask eval on gpt-5-mini reported 0 calls and no
+// tokens for that reason.
+export interface AskUsage {
+  // How often the model was called, which is what ASK_MAX_STEPS counts.
+  model_calls: number;
+  // Null when no call reported usage (the mock).
+  tokens: { input: number; output: number } | null;
+}
+
 export interface AskResult {
   stopped: "done" | "step_limit";
   answer: string | null;
   citations: AskCitation[];
   steps: AskStep[];
+  usage: AskUsage;
 }
 
 // The question ran into its time limit. Carries what the agent had done until then.
 export class AskTimeoutError extends Error {
-  constructor(readonly steps: AskStep[]) {
+  constructor(
+    readonly steps: AskStep[],
+    readonly usage: AskUsage,
+  ) {
     super("the question was not answered in time");
     this.name = "AskTimeoutError";
   }
@@ -75,35 +108,68 @@ class StepLimitError extends Error {
   }
 }
 
-// The two rules of a run that the model does not get a say in:
-// - A first reply without a tool call is sent back once with the lookup reminder. Once: a second
-//   reply without one is taken as the answer, the question may really not need a lookup.
-// - The model calls of one question are counted, the one that was sent back included. When the
+// Whether a tool has returned something for the question that is being answered. A call that did
+// not run because of its arguments is not a lookup.
+function lookedUp(messages: readonly BaseMessage[]): boolean {
+  const question = messages.findLastIndex((m) => m instanceof HumanMessage && !isAgentNote(m));
+  return messages.slice(question + 1).some((m) => m instanceof ToolMessage && m.status !== "error");
+}
+
+interface RunRules {
+  maxSteps: number;
+  // Makes the search the model did not make and returns it as messages.
+  lookup: () => Promise<BaseMessage[]>;
+}
+
+// The rules of a run that the model does not get a say in:
+// - No lookup, no answer. A reply without a tool call, when no tool has returned anything for
+//   the question yet, is sent back once with the lookup reminder. When the next reply has no
+//   lookup behind it either, the code searches with the question as the query and asks once more
+//   for an answer from those results. So an answer either has a tool result in front of it or
+//   comes from a run that had no call left to ask again. The price is a search and a third call
+//   for a question that needs no lookup ("thanks").
+// - A tool call with wrong arguments does not run. The model gets a short message that says what
+//   to fix, see prepareToolArgs.
+// - The model calls of one question are counted, the ones that were sent back included. When the
 //   last allowed call asks for tools again, the run ends there: running them would be work nobody
 //   reads.
 // The agent is built per question, so the count is too. langchain ships a
-// modelCallLimitMiddleware for the second rule, but its types do not compile under
+// modelCallLimitMiddleware for the last rule, but its types do not compile under
 // exactOptionalPropertyTypes and it keeps its count in the thread, where a run that was cut short
 // leaves it behind.
-function runRules(maxSteps: number) {
+function runRules({ maxSteps, lookup }: RunRules) {
   let calls = 0;
+  let reminded = false;
   return createMiddleware({
     name: "RunRules",
+    wrapToolCall: (request, handler) => {
+      const { toolCall } = request;
+      const prepared = prepareToolArgs(toolCall.name, toolCall.args);
+      if (prepared.ok) {
+        return handler({ ...request, toolCall: { ...toolCall, args: prepared.args } });
+      }
+      return new ToolMessage({
+        content: prepared.message,
+        tool_call_id: toolCall.id ?? "",
+        name: toolCall.name,
+        status: "error",
+      });
+    },
     afterModel: {
       canJumpTo: ["model"],
-      hook: (state) => {
+      hook: async (state) => {
         calls += 1;
         const last = state.messages.at(-1);
         const wantsTools = last instanceof AIMessage && (last.tool_calls?.length ?? 0) > 0;
         if (calls >= maxSteps && wantsTools) throw new StepLimitError(maxSteps);
-        // Not when this was the only call there is: the reminder would have nobody to go to.
-        if (calls === 1 && !wantsTools && maxSteps > 1) {
-          return {
-            messages: [lookupReminder()],
-            jumpTo: "model" as const,
-          };
+        // Not when this was the last call there is: whatever is sent back would have nobody to
+        // go to.
+        if (wantsTools || calls >= maxSteps || lookedUp(state.messages)) return undefined;
+        if (!reminded) {
+          reminded = true;
+          return { messages: [lookupReminder()], jumpTo: "model" as const };
         }
-        return undefined;
+        return { messages: [answerFromResults(), ...(await lookup())], jumpTo: "model" as const };
       },
     },
   });
@@ -121,14 +187,38 @@ export function stepsOf(turn: readonly BaseMessage[]): AskStep[] {
     if (!(message instanceof AIMessage)) continue;
     for (const call of message.tool_calls ?? []) {
       const result = call.id === undefined ? undefined : results.get(call.id);
+      const note = isCodeLookupId(call.id) ? CODE_LOOKUP_NOTE : "";
       steps.push({
         tool: call.name,
         input: call.args,
-        result: result === undefined ? "not run" : summaryOf(result),
+        result: result === undefined ? "not run" : `${note}${summaryOf(result)}`,
       });
     }
   }
   return steps;
+}
+
+// What a provider puts on an ai message about the call that made it. The mock leaves it out.
+const ReportedUsage = z.object({ input_tokens: z.number(), output_tokens: z.number() });
+
+// The model calls of one question and what they reported. Every ai message is one call, except
+// the one that stands for a search the code made.
+// Given the messages as the graph produced them, not as the thread stores them: a provider that
+// sets the usage on the message after building it (ChatOpenAI on the completions api) loses it
+// when the checkpointer writes the message down.
+export function usageOf(produced: readonly unknown[]): AskUsage {
+  const usage: AskUsage = { model_calls: 0, tokens: null };
+  for (const message of produced) {
+    if (!(message instanceof AIMessage) || isCodeLookup(message)) continue;
+    usage.model_calls += 1;
+    const used = ReportedUsage.safeParse(message.usage_metadata);
+    if (!used.success) continue;
+    usage.tokens = {
+      input: (usage.tokens?.input ?? 0) + used.data.input_tokens,
+      output: (usage.tokens?.output ?? 0) + used.data.output_tokens,
+    };
+  }
+  return usage;
 }
 
 function removals(messages: readonly BaseMessage[]): RemoveMessage[] {
@@ -172,7 +262,14 @@ function progressOf(message: unknown): AskProgress[] {
     }));
   }
   if (message instanceof ToolMessage) {
-    return [{ type: "tool_result", tool: message.name ?? "tool", result: summaryOf(message.text) }];
+    const note = isCodeLookupId(message.tool_call_id) ? CODE_LOOKUP_NOTE : "";
+    return [
+      {
+        type: "tool_result",
+        tool: message.name ?? "tool",
+        result: `${note}${summaryOf(message.text)}`,
+      },
+    ];
   }
   if (message instanceof HumanMessage && isLookupReminder(message)) {
     return [
@@ -192,18 +289,38 @@ const GraphUpdate = z.record(
 
 export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult> {
   const { db, log, context } = { ...deps, ...input };
+  const prompt = askPrompt(deps.promptVersion);
+  const tools = createAskTools({
+    db,
+    embedder: deps.embedder,
+    log,
+    context,
+    documentId: input.documentId,
+    descriptions: prompt.tools,
+  });
+  const [, searchClauses] = tools;
+
+  // A search the code makes itself, with the question as the query: the same tool the model
+  // would call, so the result counts against the same budget and is limited to the same contract.
+  async function codeLookup(): Promise<BaseMessage[]> {
+    const args = {
+      query: input.question.slice(0, MAX_QUERY_CHARS),
+      ...(input.documentId === undefined ? {} : { document_id: input.documentId }),
+    };
+    const result: unknown = await searchClauses.invoke(args);
+    return codeLookupMessages(
+      searchClauses.name,
+      args,
+      typeof result === "string" ? result : JSON.stringify(result),
+    );
+  }
+
   const agent = createAgent({
     model: deps.chatModels.create(input.model, input.signal),
-    tools: createAskTools({
-      db,
-      embedder: deps.embedder,
-      log,
-      context,
-      documentId: input.documentId,
-    }),
-    systemPrompt: buildAskSystemPrompt(context.today, input.documentId),
+    tools,
+    systemPrompt: prompt.system(context.today, input.documentId),
     checkpointer: deps.threads,
-    middleware: [runRules(deps.maxSteps)],
+    middleware: [runRules({ maxSteps: deps.maxSteps, lookup: codeLookup })],
   });
   const thread = { configurable: { thread_id: input.threadId } };
 
@@ -213,11 +330,20 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
   }
   const before = (await threadMessages()).length;
 
+  // A question about one contract does not wait for the model to ask for a search. The 7b wrote
+  // its call as text, "[search_clauses(...)]", and that was the whole answer. So the contract is
+  // searched before the first model call and the passages are there when the model first reads
+  // the question. Text that looks like a call is never parsed.
+  const searched = input.documentId === undefined ? [] : await codeLookup();
+  if (input.onProgress !== undefined) searched.flatMap(progressOf).forEach(input.onProgress);
+
+  // Every message a node of the graph added while the question ran.
+  const produced: unknown[] = [];
   try {
     // The same run for both endpoints: the stream is read here either way, and whoever wants
     // to watch passes onProgress.
     const stream = await agent.stream(
-      { messages: [new HumanMessage(input.question)] },
+      { messages: [new HumanMessage(input.question), ...searched] },
       {
         ...thread,
         signal: input.signal,
@@ -229,9 +355,12 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
     );
     for await (const item of stream) {
       const update = GraphUpdate.safeParse(item);
-      if (!update.success || input.onProgress === undefined) continue;
+      if (!update.success) continue;
       for (const node of Object.values(update.data)) {
-        for (const message of node?.messages ?? []) progressOf(message).forEach(input.onProgress);
+        for (const message of node?.messages ?? []) {
+          produced.push(message);
+          if (input.onProgress !== undefined) progressOf(message).forEach(input.onProgress);
+        }
       }
     }
   } catch (err) {
@@ -242,9 +371,10 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
     const partial = (await threadMessages()).slice(before);
     await agent.graph.updateState(thread, { messages: removals(partial) });
     const steps = stepsOf(partial);
+    const usage = usageOf(produced);
     if (err instanceof StepLimitError)
-      return { stopped: "step_limit", answer: null, citations: [], steps };
-    if (input.signal.aborted) throw new AskTimeoutError(steps);
+      return { stopped: "step_limit", answer: null, citations: [], steps, usage };
+    if (input.signal.aborted) throw new AskTimeoutError(steps, usage);
     throw err;
   }
 
@@ -293,6 +423,7 @@ export async function runAsk(deps: AskDeps, input: AskInput): Promise<AskResult>
     answer,
     citations: verifyCitations(answer, citationSources({ db, log, context })),
     steps,
+    usage: usageOf(produced),
   };
 }
 
